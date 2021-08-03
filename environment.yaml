@@ -1,11 +1,8 @@
-name: epi2melabs-nf-template-workflow
+name: epi2melabs-nf-human-snp
 channels:
     - epi2melabs
     - bioconda
     - conda-forge
     - defaults
 dependencies:
-    - python==3.8.*
-    - aplanat >=0.5.0
-    - pysam
-    - fastcat
+  - clair3

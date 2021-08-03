@@ -4,8 +4,7 @@ include:
       file: "wf-containers.yaml"
 
 variables:
-    # Workflow inputs given to nextflow.
-    # The workflow should define `--out_dir`, the CI template sets this.
-    # Only common file inputs and option values need to be given here
-    # (not things such as -profile)
-    NF_WORKFLOW_OPTS: "--fastq test_data"
+    NF_BEFORE_SCRIPT: |
+        mkdir demo_data && wget -O demo_data.tar.gz https://ont-exd-int-s3-euwst1-epi2me-labs.s3.amazonaws.com/clair-tutorial/demo_data.tar.gz && tar xvzf  demo_data.tar.gz -C demo_data
+    NF_WORKFLOW_OPTS: "--bam demo_data/HG003_chr20_demo.bam --bed demo_data/quick_demo.bed --ref demo_data/GRCh38_no_alt_chr20.fa"
+

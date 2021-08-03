@@ -29,7 +29,34 @@ To obtain the workflow, having installed `nextflow`, users can run:
 nextflow run epi2me-labs/wf-template --help
 ```
 
-to see the options for the workflow.
+**Download demo data**
+
+```
+# download clair demo data
+OUTPUT=output
+nextflow run epi2me-labs/wf-clair \
+   -w {OUTPUT}/workspace/
+   --download 
+```
+
+```
+
+# run the pipeline with the test data
+OUTPUT=output
+nextflow run epi2me-labs/wf-clair \
+    -w ${OUTPUT}/workspace \
+    -profile standard \
+    --bam ${OUTPUT}/demo_data/HG003_chr20_demo.bam \
+    --bed ${OUTPUT}/demo_data/quick_demo.bed \
+    --ref ${OUTPUT}/demo_data/GRCh38_no_alt_chr20.fa \
+    --out_dir ${OUTPUT}
+```
+
+The output of the pipeline will be found in `./output` for the above
+example. This directory contains the nextflow working directories alongside
+the 
+
+TODO: More on outputs
 
 **Workflow outputs**
 
