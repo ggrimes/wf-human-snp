@@ -1,5 +1,8 @@
-nextflow
+output
 .nextflow*
-template-workflow
+.nextflow.log*
+nextflow
 .*.swp
 .*.swo
+Clair3
+test_data/
