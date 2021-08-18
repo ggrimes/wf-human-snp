@@ -32,6 +32,7 @@ params.sample_name = "SAMPLE"
 params.vcf_fn = "EMPTY"
 params.ctg_name = "EMPTY"
 params.include_all_ctgs = "False"
+params.CUDA_VISIBLE_DEVICES = ""
 
 
 def helpMessage(){
@@ -49,7 +50,7 @@ Script Options:
 """
 }
 
-process run_clair3_stage_1 {
+process run_clair3_stage_1a {
     label "clair3"
     input:
         path bam
@@ -59,10 +60,6 @@ process run_clair3_stage_1 {
         path bed
     output:
         path "clair_output"
-        path "clair_output/pileup.vcf.gz"
-        path "clair_output/pileup.vcf.gz.tbi"
-        path "clair_output/log/parallel_1_call_var_bam_pileup.log"
-        path "clair_output/log/1_call_var_bam_pileup.log"
         path "clair_output/tmp/CONTIGS"
         path "clair_output/tmp/CHUNK_LIST"
         path "clair_output/tmp/split_beds/*"
@@ -74,7 +71,6 @@ process run_clair3_stage_1 {
         path "clair_output/tmp/phase_output/phase_vcf"
         path "clair_output/tmp/phase_output/phase_bam"
         path "clair_output/tmp/full_alignment_output/candidate_bed"
-        path "clair_output/tmp/pileup_output/pileup_*_*.vcf"
     shell:
         '''
         mkdir -p clair_output/log
@@ -102,39 +98,103 @@ process run_clair3_stage_1 {
             --ref_pct_full !{params.ref_pct_full} \
             --snp_min_af !{params.snp_min_af} \
             --indel_min_af !{params.indel_min_af}
+        '''
+}
 
-        readarray -t CHR < "${OUTPUT_FOLDER}/tmp/CONTIGS"
-        cd \$OUTPUT_FOLDER
+process generate_chunks {
+    label "clair3"
+    input:
+        path "clair_output/tmp/CHUNK_LIST"
+    output:
+        stdout
+    shell:
+        '''
+        #!/usr/bin/env python
+        with open("clair_output/tmp/CHUNK_LIST") as f:
+            for chunk in f:
+                print(chunk.strip())
+        '''
+
+}
+
+process generate_contigs {
+    label "clair3"
+    input:
+        path "clair_output/tmp/CONTIGS"
+    output:
+        stdout
+    shell:
+        '''
+        #!/usr/bin/env python
+        with open("clair_output/tmp/CONTIGS") as f:
+            for contig in f:
+                print(contig.strip())
+        '''
+
+}
+
+
+process run_clair3_stage_1b {
+    label "clair3"
+    input:
+        each region
+        path bam
+        path bai
+        path ref
+        path fai
+        path bed
+        path "clair_output"
+    output:
+        path "clair_output"
+        path "clair_output/log/parallel_1_call_var_bam_pileup.log"
+        path "clair_output/log/1_call_var_bam_pileup.log"
+    shell:
+        '''
+        region_str="!{region}"
+        region_array=($region_str)
+        echo ${region_array[0]}
+        echo ${region_array[1]}
+        echo ${region_array[2]}
+        . env.sh !{bam} !{bed} !{ref} "clair_output" !{params.threads}
+        cd $OUTPUT_FOLDER
         CUDA_VISIBLE_DEVICES=""
-        echo "bed, bed, ref: $BAM , $BED , $REF"
-        parallel \
-            --retries 4 \
-            -C ' ' \
-            --joblog \$OUTPUT_FOLDER/log/parallel_1_call_var_bam_pileup.log \
-            -j 4 \
-            --env BED \
-            --env BAM \
-            --env REF \
-            --env OUTPUT_FOLDER \
-            'echo "hello: ${BED}" && !{params.python} $(which clair3.py) CallVarBam \
-                --chkpnt_fn ${CONDA_DIR}/bin/models/ont/pileup \
-                --bam_fn "${BAM}" \
-                --call_fn $OUTPUT_FOLDER/tmp/pileup_output/pileup_{1}_{2}.vcf \
-                --sampleName !{params.sample_name} \
-                --ref_fn "${REF}"\
-                --extend_bed ${OUTPUT_FOLDER}/tmp/split_beds/{1} \
-                --bed_fn "${BED}" \
-                --vcf_fn !{params.vcf_fn} \
-                --ctgName {1} \
-                --chunk_id {2} \
-                --chunk_num {3} \
-                --snp_min_af !{params.snp_min_af} \
-                --indel_min_af !{params.indel_min_af} \
-                --temp_file_dir ${OUTPUT_FOLDER}/tmp/gvcf_tmp_output \
-                --pileup' \
-            :::: ${OUTPUT_FOLDER}/tmp/CHUNK_LIST \
-            |& tee ${LOG_PATH}/1_call_var_bam_pileup.log
+        !{params.python} $(which clair3.py) CallVarBam \
+            --chkpnt_fn ${CONDA_DIR}/bin/models/ont/pileup \
+            --bam_fn "${BAM}" \
+            --call_fn $OUTPUT_FOLDER/tmp/pileup_output/pileup_${region_array[0]}_${region_array[1]}.vcf \
+            --sampleName !{params.sample_name} \
+            --ref_fn "${REF}"\
+            --extend_bed ${OUTPUT_FOLDER}/tmp/split_beds/${region_array[0]} \
+            --bed_fn "${BED}" \
+            --vcf_fn !{params.vcf_fn} \
+            --ctgName "${region_array[0]}" \
+            --chunk_id "${region_array[1]}" \
+            --chunk_num "${region_array[2]}" \
+            --snp_min_af !{params.snp_min_af} \
+            --indel_min_af !{params.indel_min_af} \
+            --temp_file_dir ${OUTPUT_FOLDER}/tmp/gvcf_tmp_output \
+            --pileup \
+        |& tee ${LOG_PATH}/1_call_var_bam_pileup.log
+        '''
+}
 
+process run_clair3_stage_1c {
+    label "clair3"
+    input:
+        path bam
+        path bai
+        path ref
+        path fai
+        path bed
+        path "clair_output"
+    output:
+        path "clair_output"
+        path "clair_output/pileup.vcf.gz"
+        path "clair_output/pileup.vcf.gz.tbi"
+        path "clair_output/tmp/pileup_output/pileup_*_*.vcf"
+    shell:
+        '''
+        . env.sh !{bam} !{bed} !{ref} "clair_output" !{params.threads}
         !{params.pypy} $(which clair3.py) SortVcf \
             --input_dir ${OUTPUT_FOLDER}/tmp/pileup_output \
             --vcf_fn_prefix pileup \
@@ -142,11 +202,12 @@ process run_clair3_stage_1 {
             --sampleName !{params.sample_name} \
             --ref_fn ${REF}
 
-        if [ "$( gzip -fdc ${OUTPUT_FOLDER}/pileup.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; then echo "[INFO] Exit in pileup variant calling"; exit 0; fi
+        if [ "$( gzip -fdc ${OUTPUT_FOLDER}/pileup.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; \
+        then echo "[INFO] Exit in pileup variant calling"; exit 0; fi
         '''
 }
 
-process run_clair3_stage_2 {
+process run_clair3_stage_2a {
     label "clair3"
     input:
         path bam
@@ -158,32 +219,40 @@ process run_clair3_stage_2 {
     output:
         path "clair_output"
         path "clair_output/tmp/phase_output/phase_vcf/phase_qual"
-        path "clair_output/log/parallel_2_select_hetero_snp.log"
-        path "clair_output/log/2_select_hetero_snp.log"
     shell:
         '''
         . env.sh !{bam} !{bed} !{ref} "clair_output"
         echo $''
         echo "[INFO] 2/7 Select heterozygous SNP variants for Whatshap phasing and haplotagging"
-        readarray -t CHR < "${OUTPUT_FOLDER}/tmp/CONTIGS"
         gzip \
             -fdc ${OUTPUT_FOLDER}/pileup.vcf.gz | \
             !{params.pypy} $(which clair3.py) SelectQual \
                 --phase \
                 --output_fn ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf
+        '''
+}
 
-        time \
-            parallel \
-                --retries 4 \
-                --joblog ${LOG_PATH}/parallel_2_select_hetero_snp.log \
-                --env OUTPUT_FOLDER \
-                -j !{params.threads} \
-                "echo '{1}'; !{params.pypy} $(which clair3.py) SelectHetSnp \
-                    --vcf_fn ${OUTPUT_FOLDER}/pileup.vcf.gz \
-                    --split_folder ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf \
-                    --ctgName {1}" \
-                ::: ${CHR[@]} ::: ${ALL_SAMPLE[@]} \
-                |& tee ${LOG_PATH}/2_select_hetero_snp.log
+process run_clair3_stage_2b {
+    label "clair3"
+    input:
+        each contig
+        path bam
+        path bai
+        path ref
+        path fai
+        path bed
+        path "clair_output"
+    output:
+        path "clair_output"
+        path "clair_output/log/2_select_hetero_snp.log"
+    shell:
+        '''
+        . env.sh !{bam} !{bed} !{ref} "clair_output"
+        !{params.pypy} $(which clair3.py) SelectHetSnp \
+            --vcf_fn ${OUTPUT_FOLDER}/pileup.vcf.gz \
+            --split_folder ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf \
+            --ctgName !{contig} \
+        |& tee ${LOG_PATH}/2_select_hetero_snp.log
         '''
 }
 
@@ -191,6 +260,7 @@ process run_clair3_stage_2 {
 process run_clair3_stage_3{
     label "clair3"
     input:
+        each contig
         path bam
         path bai
         path ref
@@ -199,39 +269,26 @@ process run_clair3_stage_3{
         path "clair_output"
     output:
         path "clair_output"
-        path "clair_output/log/parallel_3_phase.log"
-        path "clair_output/log/parallel_3_phase.log"
         path "clair_output/tmp/phase_output/phase_vcf/phased_*.vcf.gz"
     shell:
         '''
         echo $''
         echo "[INFO] 3/7 Phase VCF file using Whatshap"
         . env.sh !{bam} !{bed} !{ref} "clair_output"
-        readarray -t CHR < "${OUTPUT_FOLDER}/tmp/CONTIGS"
-        parallel \
-            --retries 4 \
-            --joblog ${LOG_PATH}/parallel_3_phase.log \
-            --env OUTPUT_FOLDER \
-            --env BAM \
-            --env REF \
-            -j !{params.threads} \
-            "whatshap phase \
-                --output ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf/phased_{1}.vcf.gz \
-                --reference ${REF} \
-                --chromosome {1} \
-                --distrust-genotypes \
-                --ignore-read-groups \
-                ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf/{1}.vcf \
-                ${BAM}" \
-            ::: ${CHR[@]} |& tee ${LOG_PATH}/3_phase.log
+        whatshap phase \
+            --output ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf/phased_!{contig}.vcf.gz \
+            --reference ${REF} \
+            --chromosome !{contig} \
+            --distrust-genotypes \
+            --ignore-read-groups \
+            ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf/!{contig}.vcf \
+            ${BAM} \
+        |& tee ${LOG_PATH}/3_phase.log
 
-        parallel \
-            --j !{params.threads} \
-            "tabix \
-                -f \
-                -p vcf \
-                ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf/phased_{1}.vcf.gz" \
-            ::: ${CHR[@]}
+        tabix \
+            -f \
+            -p vcf \
+            ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf/phased_!{contig}.vcf.gz
 
         '''
 }
@@ -239,6 +296,7 @@ process run_clair3_stage_3{
 process run_clair3_stage_4{
     label "clair3"
     input:
+        each contig
         path bam
         path bai
         path ref
@@ -247,7 +305,6 @@ process run_clair3_stage_4{
         path "clair_output"
     output:
         path "clair_output"
-        path "clair_output/log/parallel_4_haplotag.log"
         path "clair_output/log/4_haplotag.log"
         path "clair_output/tmp/phase_output/phase_bam/*.bam"
         path "clair_output/tmp/phase_output/phase_vcf/phased_*.vcf.gz"
@@ -256,34 +313,22 @@ process run_clair3_stage_4{
         echo $''
         echo "[INFO] 4/7 Haplotag input BAM file using Whatshap"
         . env.sh !{bam} !{bed} !{ref} "clair_output"
-        readarray -t CHR < "${OUTPUT_FOLDER}/tmp/CONTIGS"
-        time \
-            parallel \
-                --retries 4 \
-                --joblog ${LOG_PATH}/parallel_4_haplotag.log \
-                --env REF \
-                --env OUTPUT_FOLDER \
-                -j !{params.threads} \
-            "whatshap haplotag \
-                --output ${OUTPUT_FOLDER}/tmp/phase_output/phase_bam/{1}.bam  \
-                --reference ${REF} \
-                --ignore-read-groups \
-                --regions {1} \
-                ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf/phased_{1}.vcf.gz \
-                ${BAM}" \
-            ::: ${CHR[@]} |& tee ${LOG_PATH}/4_haplotag.log
+        whatshap haplotag \
+            --output ${OUTPUT_FOLDER}/tmp/phase_output/phase_bam/!{contig}.bam  \
+            --reference ${REF} \
+            --ignore-read-groups \
+            --regions !{contig} \
+            ${OUTPUT_FOLDER}/tmp/phase_output/phase_vcf/phased_!{contig}.vcf.gz \
+            ${BAM} \
+        |& tee ${LOG_PATH}/4_haplotag.log
 
-        parallel \
-            -j !{params.threads} \
-            --env OUTPUT_FOLDER \
-            "samtools index \
-                -@12 \
-                ${OUTPUT_FOLDER}/tmp/phase_output/phase_bam/{1}.bam" \
-        ::: ${CHR[@]}
+        samtools index \
+            -@12 \
+            ${OUTPUT_FOLDER}/tmp/phase_output/phase_bam/!{contig}.bam
         '''
 }
 
-process run_clair3_stage_5{
+process run_clair3_stage_5a{
     label "clair3"
     input:
         path bam
@@ -294,9 +339,6 @@ process run_clair3_stage_5{
         path "clair_output"
     output:
         path "clair_output"
-        path "clair_output/log/parallel_5_select_candidate.log"
-        path "clair_output/log/5_select_candidate.log"
-        path "clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILE_*"
         path "clair_output/tmp/full_alignment_output/candidate_bed/qual"
     shell:
         '''
@@ -304,7 +346,6 @@ process run_clair3_stage_5{
         echo $''
         echo "[INFO] 5/7 Select candidates for full-alignment calling"
         . env.sh !{bam} !{bed} !{ref} "clair_output"
-        readarray -t CHR < "${OUTPUT_FOLDER}/tmp/CONTIGS"
         gzip -fdc ${OUTPUT_FOLDER}/pileup.vcf.gz | \
             !{params.pypy} $(which clair3.py) SelectQual \
                 --output_fn ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed \
@@ -312,27 +353,100 @@ process run_clair3_stage_5{
                 --ref_pct_full !{params.ref_pct_full} \
                 --platform ont \
                 --vcf_fn !{params.vcf_fn}
-
-        time \
-            parallel \
-                --retries 4 \
-                --joblog ${LOG_PATH}/parallel_5_select_candidate.log \
-                --env OUTPUT_FOLDER \
-                --env REF \
-                -j !{params.threads} \
-                "!{params.pypy} $(which clair3.py) SelectCandidates \
-                    --pileup_vcf_fn ${OUTPUT_FOLDER}/pileup.vcf.gz \
-                    --split_folder ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed \
-                    --ref_fn ${REF} \
-                    --var_pct_full !{params.var_pct_full} \
-                    --ref_pct_full !{params.ref_pct_full} \
-                    --platform ont\
-                    --ctgName {1}" \
-                ::: ${CHR[@]}  |& tee ${LOG_PATH}/5_select_candidate.log
         '''
 }
 
-process run_clair3_stage_6 {
+process run_clair3_stage_5b{
+    label "clair3"
+    input:
+        each contig
+        path bam
+        path bai
+        path ref
+        path fai
+        path bed
+        path "clair_output"
+    output:
+        path "clair_output"
+        path "clair_output/log/5_select_candidate.log"
+        path "clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILE_*"
+    shell:
+        '''
+        . env.sh !{bam} !{bed} !{ref} "clair_output"
+        !{params.pypy} $(which clair3.py) SelectCandidates \
+            --pileup_vcf_fn ${OUTPUT_FOLDER}/pileup.vcf.gz \
+            --split_folder ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed \
+            --ref_fn ${REF} \
+            --var_pct_full !{params.var_pct_full} \
+            --ref_pct_full !{params.ref_pct_full} \
+            --platform ont\
+            --ctgName !{contig} \
+        |& tee ${LOG_PATH}/5_select_candidate.log
+        '''
+}
+
+process run_clair3_stage_6a {
+    label "clair3"
+    input:
+        path bam
+        path bai
+        path ref
+        path fai
+        path bed
+        path "clair_output"
+    output:
+        path clair_output
+        path "clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES"
+        stdout
+    shell:
+        '''
+        echo $''
+        . env.sh !{bam} !{bed} !{ref} "clair_output"
+        cat ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILE_* > ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES
+        cat ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES
+        '''
+}
+
+
+process run_clair3_stage_6b {
+    label "clair3"
+    input:
+        each aln_path
+        path bam
+        path bai
+        path ref
+        path fai
+        path bed
+        path "clair_output"
+    output:
+        path "clair_output"
+        path "clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES"
+        path "clair_output/log/6_call_var_bam_full_alignment.log"
+    shell:
+        '''
+        echo "[INFO] 6/7 Call low-quality variants using full-alignment model"
+        . env.sh !{bam} !{bed} !{ref} "clair_output"
+        !{params.python} $(which clair3.py) CallVarBam \
+            --chkpnt_fn ${CONDA_DIR}/bin/models/ont/full_alignment \
+            --bam_fn ${OUTPUT_FOLDER}/tmp/phase_output/phase_bam/{!{aln_path}/.}.bam \
+            --call_fn ${OUTPUT_FOLDER}/tmp/full_alignment_output/full_alignment_{!{aln_path}/}.vcf \
+            --sampleName !{params.sample_name} \
+            --vcf_fn !{params.vcf_fn} \
+            --ref_fn ${REF} \
+            --full_aln_regions !{aln_path} \
+            --ctgName {!{aln_path}/.} \
+            --add_indel_length \
+            --phasing_info_in_bam \
+            --gvcf !{params.GVCF} \
+            --python !{params.python} \
+            --pypy !{params.pypy} \
+            --samtools samtools \
+            --platform ont \
+        |& tee ${LOG_PATH}/6_call_var_bam_full_alignment.log
+        '''
+}
+
+process run_clair3_stage_6c {
     label "clair3"
     input:
         path bam
@@ -344,41 +458,12 @@ process run_clair3_stage_6 {
     output:
         path "clair_output"
         path "clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES"
-        path "clair_output/log/parallel_6_call_var_bam_full_alignment.log"
         path "clair_output/log/6_call_var_bam_full_alignment.log"
         path "clair_output/full_alignment.vcf.gz"
         path "clair_output/full_alignment.vcf.gz.tbi"
     shell:
         '''
-        echo $''
-        echo "[INFO] 6/7 Call low-quality variants using full-alignment model"
         . env.sh !{bam} !{bed} !{ref} "clair_output"
-        cat ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILE_* > ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES
-
-        time \
-            parallel \
-                --retries 4 \
-                --joblog ${LOG_PATH}/parallel_6_call_var_bam_full_alignment.log \
-                --env OUTPUT_FOLDER \
-                --env REF \
-                -j !{params.threads} \
-                "!{params.python} $(which clair3.py) CallVarBam \
-                    --chkpnt_fn ${CONDA_DIR}/bin/models/ont/full_alignment \
-                    --bam_fn ${OUTPUT_FOLDER}/tmp/phase_output/phase_bam/{1/.}.bam \
-                    --call_fn ${OUTPUT_FOLDER}/tmp/full_alignment_output/full_alignment_{1/}.vcf \
-                    --sampleName !{params.sample_name} \
-                    --vcf_fn !{params.vcf_fn} \
-                    --ref_fn ${REF} \
-                    --full_aln_regions {1} \
-                    --ctgName {1/.} \
-                    --add_indel_length \
-                    --phasing_info_in_bam \
-                    --gvcf !{params.GVCF} \
-                    --python !{params.python} \
-                    --pypy !{params.pypy} \
-                    --samtools samtools \
-                    --platform ont" \
-                :::: ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES |& tee ${LOG_PATH}/6_call_var_bam_full_alignment.log
 
         !{params.pypy} $(which clair3.py) SortVcf \
             --input_dir ${OUTPUT_FOLDER}/tmp/full_alignment_output \
@@ -400,7 +485,44 @@ process run_clair3_stage_6 {
         '''
 }
 
-process run_clair3_stage_7{
+process run_clair3_stage_7a{
+    label "clair3"
+    input:
+        each contig
+        path bam
+        path bai
+        path ref
+        path fai
+        path bed
+        path "clair_output"
+    output:
+        path "clair_output"
+        path "clair_output/log/7_merge_vcf.log"
+        path "clair_output/tmp/merge_output/merge_*.vcf"
+    shell:
+        '''
+        echo $''
+        echo "[INFO] 7/7 Merge pileup VCF and full-alignment VCF"
+        . env.sh !{bam} !{bed} !{ref} "clair_output"
+        !{params.pypy} $(which clair3.py) MergeVcf \
+            --pileup_vcf_fn ${OUTPUT_FOLDER}/pileup.vcf.gz \
+            --bed_fn_prefix ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed \
+            --full_alignment_vcf_fn ${OUTPUT_FOLDER}/full_alignment.vcf.gz \
+            --output_fn ${OUTPUT_FOLDER}/tmp/merge_output/merge_!{contig}.vcf \
+            --platform ont \
+            --print_ref_calls False \
+            --gvcf !{params.GVCF} \
+            --haploid_precise False \
+            --haploid_sensitive False \
+            --gvcf_fn ${OUTPUT_FOLDER}/tmp/merge_output/merge_!{contig}.gvcf \
+            --non_var_gvcf_fn ${OUTPUT_FOLDER}/tmp/gvcf_tmp_output/non_var.gvcf \
+            --ref_fn ${REF} \
+            --ctgName !{contig} \
+        |& tee ${LOG_PATH}/7_merge_vcf.log
+        '''
+}
+
+process run_clair3_stage_7b{
     label "clair3"
     input:
         path bam
@@ -411,40 +533,11 @@ process run_clair3_stage_7{
         path "clair_output"
     output:
         path "clair_output"
-        path "clair_output/log/parallel_7_merge_vcf.log"
-        path "clair_output/log/7_merge_vcf.log"
-        path "clair_output/tmp/merge_output/merge_*.vcf"
         path "clair_output/merge_output.vcf.gz"
         path "clair_output/merge_output.vcf.gz.tbi"
     shell:
         '''
-        echo $''
-        echo "[INFO] 7/7 Merge pileup VCF and full-alignment VCF"
         . env.sh !{bam} !{bed} !{ref} "clair_output"
-        readarray -t CHR < "${OUTPUT_FOLDER}/tmp/CONTIGS"
-        time \
-            parallel \
-                --retries 4 \
-                --joblog ${LOG_PATH}/parallel_7_merge_vcf.log \
-                --env OUTPUT_FOLDER \
-                --env REF \
-                -j !{params.threads} \
-                "!{params.pypy} $(which clair3.py) MergeVcf \
-                    --pileup_vcf_fn ${OUTPUT_FOLDER}/pileup.vcf.gz \
-                    --bed_fn_prefix ${OUTPUT_FOLDER}/tmp/full_alignment_output/candidate_bed \
-                    --full_alignment_vcf_fn ${OUTPUT_FOLDER}/full_alignment.vcf.gz \
-                    --output_fn ${OUTPUT_FOLDER}/tmp/merge_output/merge_{1}.vcf \
-                    --platform ont \
-                    --print_ref_calls False \
-                    --gvcf !{params.GVCF} \
-                    --haploid_precise False \
-                    --haploid_sensitive False \
-                    --gvcf_fn ${OUTPUT_FOLDER}/tmp/merge_output/merge_{1}.gvcf \
-                    --non_var_gvcf_fn ${OUTPUT_FOLDER}/tmp/gvcf_tmp_output/non_var.gvcf \
-                    --ref_fn ${REF} \
-                    --ctgName {1}" \
-                ::: ${CHR[@]} |& tee ${LOG_PATH}/7_merge_vcf.log
-
         !{params.pypy} $(which clair3.py) SortVcf \
             --input_dir ${OUTPUT_FOLDER}/tmp/merge_output \
             --vcf_fn_prefix "merge" \
@@ -466,6 +559,7 @@ process run_clair3_stage_7{
         echo "[INFO] Finish calling, output file: ${OUTPUT_FOLDER}/merge_output.vcf.gz"
         '''
 }
+
 
 process hap {
     label "happy"
@@ -521,13 +615,23 @@ workflow pipeline {
         ref
         fai
     main:
-        clair_output = run_clair3_stage_1(bam, bai, ref, fai, bed)
-        clair_output = run_clair3_stage_2(bam, bai, ref, fai, bed, clair_output[0])
-        clair_output = run_clair3_stage_3(bam, bai, ref, fai, bed, clair_output[0])
-        clair_output = run_clair3_stage_4(bam, bai, ref, fai, bed, clair_output[0])
-        clair_output = run_clair3_stage_5(bam, bai, ref, fai, bed, clair_output[0])
-        clair_output = run_clair3_stage_6(bam, bai, ref, fai, bed, clair_output[0])
-        clair_output = run_clair3_stage_7(bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_1a(bam, bai, ref, fai, bed)
+        regions =  generate_chunks(clair_output[2]).splitText().map(it -> it.trim())
+        contigs = generate_contigs(clair_output[1]).splitText().map(it -> it.trim())
+        clair_output =  run_clair3_stage_1b(regions, bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_1c(bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_2a(bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_2b(contigs, bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_3(contigs, bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_4(contigs, bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_5a(bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_5b(contigs, bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_6a(bam, bai, ref, fai, bed, clair_output[0])
+        full_aln_paths = clair_output[2].splitText().map(it -> it.trim())
+        clair_output = run_clair3_stage_6b(full_aln_paths, bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_6c(bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_7a(contigs, bam, bai, ref, fai, bed, clair_output[0])
+        clair_output = run_clair3_stage_7b(bam, bai, ref, fai, bed, clair_output[0])
     emit:
         clair_output[0]
 }
