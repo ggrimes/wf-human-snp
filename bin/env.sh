@@ -14,3 +14,4 @@ REF=$(realpath ${ref})
 export REF
 LOG_PATH="${OUTPUT_FOLDER}/log"
 export LOG_PATH
+mkdir -p ${LOG_PATH}
