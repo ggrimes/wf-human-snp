@@ -5,4 +5,4 @@ channels:
     - conda-forge
     - defaults
 dependencies:
-  - clair3
+  - clair3==0.1.6
