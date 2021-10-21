@@ -1,15 +1,5 @@
 #!/usr/bin/env nextflow
 
-// Developer notes
-// 
-// This template workflow provides a basic structure to copy in order
-// to create a new workflow. Current recommended pratices are:
-//     i) create a simple command-line interface.
-//    ii) include an abstract workflow scope named "pipeline" to be used
-//        in a module fashion.
-//   iii) a second concreate, but anonymous, workflow scope to be used
-//        as an entry point when using this workflow in isolation.
-
 nextflow.enable.dsl = 2
 
 params.help = ""
@@ -29,10 +19,10 @@ params.ctg_name = "EMPTY"
 params.include_all_ctgs = "False"
 params.CUDA_VISIBLE_DEVICES = ""
 params.ref_pct_full = 0.1
-params.var_pct_full = 0.3
+params.var_pct_full = 0.7
 params.GVCF = "False"
-params.snp_min_af = 0.08
-params.indel_min_af = 0.15
+params.snp_min_af = 0.0
+params.indel_min_af = 0.0
 
 
 def helpMessage(){
@@ -63,10 +53,10 @@ process run_clair3_stage_1a {
     output:
         path "clair_output/tmp/CONTIGS", emit: contigs_file
         path "clair_output/tmp/CHUNK_LIST", emit: chunks_file
-        path "clair_output/tmp/split_beds", emit: split_beds
         path "clair_output/tmp/gvcf_tmp_output", emit: gvcf_tmp_output
     shell:
         '''
+        echo ${CONDA_DIR}
         mkdir -p clair_output/log
         touch clair_output/log/parallel_1_call_var_bam_pileup.log
         . env.sh !{bam} !{bed} !{ref} "clair_output" !{params.threads}
@@ -92,11 +82,12 @@ process run_clair3_stage_1a {
             --ref_pct_full !{params.ref_pct_full} \
             --snp_min_af !{params.snp_min_af} \
             --indel_min_af !{params.indel_min_af}
+        printenv
         '''
 }
 
+
 process generate_chunks {
-    // generate: chr20 1 13
     label "clair3"
     cpus params.threads
     input:
@@ -110,11 +101,10 @@ process generate_chunks {
             for chunk in f:
                 print(chunk.strip())
         '''
-
 }
 
+
 process generate_contigs {
-    // generate: chr20
     label "clair3"
     cpus params.threads
     input:
@@ -130,6 +120,7 @@ process generate_contigs {
         '''
 
 }
+
 
 process generate_regions {
     input:
@@ -150,7 +141,6 @@ process run_clair3_stage_1b {
         path ref
         path fai
         path bed
-        path "clair_output/tmp/split_beds"
         path "clair_output/tmp/gvcf_tmp_output"
         path model
     output:
@@ -162,23 +152,29 @@ process run_clair3_stage_1b {
         chunk_num=region[2]
         
     """
+    
         . env.sh $bam $bed $ref "clair_output" ${params.threads}
-        export OMP_NUM_THREADS=${params.threads}
-        export CUDA_VISIBLE_DEVICES=""
         mkdir -p clair_output/tmp/pileup_output
         ${params.python} \$(which clair3.py) CallVarBam \
             --chkpnt_fn $model/pileup \
             --bam_fn $bam \
-            --call_fn clair_output/tmp/pileup_output/pileup_"$chunk_id"_chr20.vcf \
+            --call_fn clair_output/tmp/pileup_output/pileup_"$contig"_"$chunk_id".vcf \
             --ref_fn $ref \
             --ctgName $contig \
             --chunk_id $chunk_id \
             --chunk_num $chunk_num \
-            --tensorflow_threads ${params.threads} \
+            --platform ont \
+            --call_snp_only False \
+            --fast_mode False \
+            --snp_min_af ${params.snp_min_af} \
+            --indel_min_af ${params.indel_min_af} \
             --pileup \
         |& tee clair_output/log/1_call_var_bam_pileup.log
+        printenv
     """
 }
+
+
 process run_clair3_stage_1c {
     label "clair3"
     cpus params.threads
@@ -198,16 +194,17 @@ process run_clair3_stage_1c {
         . env.sh !{bam} !{bed} !{ref} "clair_output" !{params.threads}
         !{params.pypy} $(which clair3.py) SortVcf \
             --input_dir clair_output/tmp/pileup_output/ \
-            --vcf_fn_prefix pileup \
+            --vcf_fn_prefix "pileup" \
             --output_fn clair_output/pileup.vcf \
             --sampleName !{params.sample_name} \
-            --ref_fn ${REF} \
+            --ref_fn !{ref} \
             --contigs_fn !{contigs}
 
         if [ "$( gzip -fdc clair_output/pileup.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; \
         then echo "[INFO] Exit in pileup variant calling"; exit 0; fi
         '''
 }
+
 
 process run_clair3_stage_2a {
     label "clair3"
@@ -235,6 +232,7 @@ process run_clair3_stage_2a {
                 --output_fn clair_output/tmp/phase_output/phase_vcf
         '''
 }
+
 
 process run_clair3_stage_2b {
     label "clair3"
@@ -282,7 +280,6 @@ process run_clair3_stage_3{
         '''
         echo $''
         echo "[INFO] 3/7 Phase VCF file using Whatshap"
-        export OMP_NUM_THREADS=!{params.threads}
         . env.sh !{bam} !{bed} !{ref} "clair_output"
         whatshap phase \
             --output clair_output/tmp/phase_output/phase_vcf/phased_!{contig}.vcf.gz \
@@ -301,6 +298,7 @@ process run_clair3_stage_3{
 
         '''
 }
+
 
 process run_clair3_stage_4{
     label "clair3"
@@ -340,6 +338,7 @@ process run_clair3_stage_4{
         '''
 }
 
+
 process run_clair3_stage_5a{
     label "clair3"
     cpus params.threads
@@ -370,6 +369,7 @@ process run_clair3_stage_5a{
         '''
 }
 
+
 process run_clair3_stage_5b{
     label "clair3"
     cpus params.threads
@@ -397,11 +397,12 @@ process run_clair3_stage_5b{
             --ref_fn !{ref} \
             --var_pct_full !{params.var_pct_full} \
             --ref_pct_full !{params.ref_pct_full} \
-            --platform ont\
+            --platform ont \
             --ctgName !{contig} \
         |& tee clair_output/log/5_select_candidate.log
         '''
 }
+
 
 process run_clair3_stage_6a {
     label "clair3"
@@ -443,30 +444,35 @@ process run_clair3_stage_6b {
         each alignment_path
         path phased_bam_index
         path "alignment_sections/*"
+        each contig
+
     output:
         path "clair_output/full_alignment_*.vcf", emit: full_alignment
-        path "clair_output/log/6_call_var_bam_full_alignment.log"
     script:
         File f = new File(alignment_path)
         filename = f.getName()
         """
         echo "[INFO] 6/7 Call low-quality variants using full-alignment model"
         . env.sh $bam $bed $ref "clair_output" ${params.threads}
-        export OMP_NUM_THREADS=${params.threads}
         ${params.python} \$(which clair3.py) CallVarBam \
             --chkpnt_fn $model/full_alignment \
             --bam_fn $phased_bam \
             --call_fn clair_output/full_alignment_"$filename".vcf \
             --ref_fn $ref \
             --full_aln_regions alignment_sections/$filename \
-            --ctgName chr20 \
-            --add_indel_length \
+            --ctgName $contig \
             --phasing_info_in_bam \
+            --snp_min_af ${params.snp_min_af} \
+            --indel_min_af ${params.indel_min_af} \
             --platform ont \
-            --tensorflow_threads ${params.threads} \
-        |& tee clair_output/log/6_call_var_bam_full_alignment.log
+            --add_indel_length \
+            --gvcf False \
+            --python ${params.python} \
+            --pypy ${params.pypy} \
+            --samtools samtools
         """
 }
+
 
 process run_clair3_stage_6c {
     label "clair3"
@@ -489,7 +495,6 @@ process run_clair3_stage_6c {
 
         !{params.pypy} $(which clair3.py) SortVcf \
             --input_dir full_alignment \
-            --vcf_fn_prefix "full_alignment" \
             --output_fn full_alignment.vcf \
             --sampleName !{params.sample_name} \
             --ref_fn !{ref} \
@@ -507,6 +512,7 @@ process run_clair3_stage_6c {
         fi
         '''
 }
+
 
 process bed_files_to_folder{
     label "clair3"
@@ -563,11 +569,12 @@ process run_clair3_stage_7a{
             --haploid_sensitive False \
             --gvcf_fn clair_output/tmp/merge_output/merge_!{contig}.gvcf \
             --non_var_gvcf_fn clair_output/tmp/gvcf_tmp_output/non_var.gvcf \
-            --ref_fn ${REF} \
+            --ref_fn !{ref} \
             --ctgName !{contig} \
         |& tee ${LOG_PATH}/7_merge_vcf.log
         '''
 }
+
 
 process run_clair3_stage_7b{
     label "clair3"
@@ -673,7 +680,6 @@ workflow pipeline {
         clair_output =  run_clair3_stage_1b(
             regions2.regions, 
             bam, bai, ref, fai, bed, 
-            run_clair3_stage_1a.out.split_beds, 
             run_clair3_stage_1a.out.gvcf_tmp_output,
             model
             )
@@ -722,7 +728,8 @@ workflow pipeline {
             run_clair3_stage_4.out.phased_vcf,
             full_aln_paths,
             run_clair3_stage_4.out.phased_bam_index,
-            run_clair3_stage_6a.out.full_alignment)
+            run_clair3_stage_6a.out.full_alignment,
+            contigs)
         clair_output = run_clair3_stage_6c(
             bam, bai, ref, fai, bed,
             run_clair3_stage_6b.out.full_alignment.collect(),
