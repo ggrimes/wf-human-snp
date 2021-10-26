@@ -3,8 +3,6 @@ FROM $BASEIMAGE
 ARG ENVFILE=environment.yaml
 COPY $ENVFILE $HOME/environment.yaml
 
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 DEBIAN_FRONTEND=noninteractive
-
 RUN \
     . $CONDA_DIR/etc/profile.d/mamba.sh \
     && micromamba activate \

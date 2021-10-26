@@ -4,5 +4,3 @@ output
 nextflow
 .*.swp
 .*.swo
-Clair3
-test_data/

@@ -1,1 +1,0 @@
-nextflow main.nf -profile standard -w ./output/workspace  --bam test_data/demo_data/HG003_chr20_demo.bam --ref test_data/demo_data/GRCh38_no_alt_chr20.fa --bed test_data/demo_data/quick_demo.bed

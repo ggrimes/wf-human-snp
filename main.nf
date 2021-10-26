@@ -6,7 +6,6 @@ params.help = ""
 params.bam = ""
 params.ref = ""
 params.bed = ""
-params.output = "output"
 params.threads = 4
 params.download = ""
 params.vcf = ""
@@ -17,7 +16,6 @@ params.sample_name = "SAMPLE"
 params.vcf_fn = "EMPTY"
 params.ctg_name = "EMPTY"
 params.include_all_ctgs = "False"
-params.CUDA_VISIBLE_DEVICES = ""
 params.ref_pct_full = 0.1
 params.var_pct_full = 0.7
 params.GVCF = "False"
@@ -37,7 +35,7 @@ Script Options:
     --bed       FILE    Path to bed file
     --ref       FILE    Path to ref file
     --model     DIR     Path to model
-    --output    DIR     Output path
+    --out_dir   DIR     Output path
 """
 }
 
@@ -56,11 +54,10 @@ process run_clair3_stage_1a {
         path "clair_output/tmp/gvcf_tmp_output", emit: gvcf_tmp_output
     shell:
         '''
-        echo ${CONDA_DIR}
         mkdir -p clair_output/log
         touch clair_output/log/parallel_1_call_var_bam_pileup.log
         . env.sh !{bam} !{bed} !{ref} "clair_output" !{params.threads}
-        !{params.python} $(which clair3.py) CheckEnvs \
+        python $(which clair3.py) CheckEnvs \
             --bam_fn !{bam} \
             --bed_fn !{bed} \
             --output_fn_prefix \$OUTPUT_FOLDER \
@@ -71,11 +68,6 @@ process run_clair3_stage_1a {
             --chunk_size 5000000 \
             --include_all_ctgs !{params.include_all_ctgs} \
             --threads !{params.threads}  \
-            --python !{params.python} \
-            --pypy !{params.pypy} \
-            --samtools samtools \
-            --whatshap whatshap \
-            --parallel parallel \
             --qual 2 \
             --sampleName !{params.sample_name} \
             --var_pct_full !{params.var_pct_full} \
@@ -150,15 +142,13 @@ process run_clair3_stage_1b {
         contig=region[0]
         chunk_id=region[1]
         chunk_num=region[2]
-        
-    """
-    
+        """
         . env.sh $bam $bed $ref "clair_output" ${params.threads}
         mkdir -p clair_output/tmp/pileup_output
-        ${params.python} \$(which clair3.py) CallVarBam \
+        python \$(which clair3.py) CallVarBam \
             --chkpnt_fn $model/pileup \
             --bam_fn $bam \
-            --call_fn clair_output/tmp/pileup_output/pileup_"$contig"_"$chunk_id".vcf \
+            --call_fn clair_output/tmp/pileup_output/pileup_${contig}_${chunk_id}.vcf \
             --ref_fn $ref \
             --ctgName $contig \
             --chunk_id $chunk_id \
@@ -192,7 +182,7 @@ process run_clair3_stage_1c {
     shell:
         '''
         . env.sh !{bam} !{bed} !{ref} "clair_output" !{params.threads}
-        !{params.pypy} $(which clair3.py) SortVcf \
+        pypy $(which clair3.py) SortVcf \
             --input_dir clair_output/tmp/pileup_output/ \
             --vcf_fn_prefix "pileup" \
             --output_fn clair_output/pileup.vcf \
@@ -227,7 +217,7 @@ process run_clair3_stage_2a {
         echo "[INFO] 2/7 Select heterozygous SNP variants for Whatshap phasing and haplotagging"
         gzip \
             -fdc clair_output/pileup.vcf.gz | \
-            !{params.pypy} $(which clair3.py) SelectQual \
+            pypy $(which clair3.py) SelectQual \
                 --phase \
                 --output_fn clair_output/tmp/phase_output/phase_vcf
         '''
@@ -254,7 +244,7 @@ process run_clair3_stage_2b {
         '''
         . env.sh !{bam} !{bed} !{ref} "clair_output"
         mkdir -p "/tmp/phase_output/phase_vcf"
-        !{params.pypy} $(which clair3.py) SelectHetSnp \
+        pypy $(which clair3.py) SelectHetSnp \
             --vcf_fn clair_output/pileup.vcf.gz \
             --split_folder clair_output/tmp/phase_output/phase_vcf \
             --ctgName !{contig} \
@@ -295,7 +285,6 @@ process run_clair3_stage_3{
             -f \
             -p vcf \
             clair_output/tmp/phase_output/phase_vcf/phased_!{contig}.vcf.gz
-
         '''
 }
 
@@ -333,7 +322,7 @@ process run_clair3_stage_4{
         |& tee ${LOG_PATH}/4_haplotag.log
 
         samtools index \
-            -@12 \
+            -@!{task.cpus} \
             clair_output/tmp/phase_output/phase_bam/!{contig}.bam
         '''
 }
@@ -361,7 +350,7 @@ process run_clair3_stage_5a{
         mkdir -p clair_output/tmp/full_alignment_output
         mkdir -p clair_output/tmp/full_alignment_output/candidate_bed
         gzip -fdc clair_output/pileup.vcf.gz | \
-        !{params.pypy} $(which clair3.py) SelectQual \
+        pypy $(which clair3.py) SelectQual \
                 --output_fn clair_output/tmp/full_alignment_output/candidate_bed \
                 --var_pct_full !{params.var_pct_full} \
                 --ref_pct_full !{params.ref_pct_full} \
@@ -391,7 +380,7 @@ process run_clair3_stage_5b{
         '''
         . env.sh !{bam} !{bed} !{ref} "clair_output"
         
-        !{params.pypy} $(which clair3.py) SelectCandidates \
+        pypy $(which clair3.py) SelectCandidates \
             --pileup_vcf_fn clair_output/pileup.vcf.gz \
             --split_folder clair_output/tmp/full_alignment_output/candidate_bed \
             --ref_fn !{ref} \
@@ -454,7 +443,7 @@ process run_clair3_stage_6b {
         """
         echo "[INFO] 6/7 Call low-quality variants using full-alignment model"
         . env.sh $bam $bed $ref "clair_output" ${params.threads}
-        ${params.python} \$(which clair3.py) CallVarBam \
+        python \$(which clair3.py) CallVarBam \
             --chkpnt_fn $model/full_alignment \
             --bam_fn $phased_bam \
             --call_fn clair_output/full_alignment_"$filename".vcf \
@@ -467,9 +456,6 @@ process run_clair3_stage_6b {
             --platform ont \
             --add_indel_length \
             --gvcf False \
-            --python ${params.python} \
-            --pypy ${params.pypy} \
-            --samtools samtools
         """
 }
 
@@ -493,7 +479,7 @@ process run_clair3_stage_6c {
         '''
         . env.sh !{bam} !{bed} !{ref} "clair_output"
 
-        !{params.pypy} $(which clair3.py) SortVcf \
+        pypy $(which clair3.py) SortVcf \
             --input_dir full_alignment \
             --output_fn full_alignment.vcf \
             --sampleName !{params.sample_name} \
@@ -557,7 +543,7 @@ process run_clair3_stage_7a{
         echo $''
         echo "[INFO] 7/7 Merge pileup VCF and full-alignment VCF"
         . env.sh !{bam} !{bed} !{ref} "clair_output"
-        !{params.pypy} $(which clair3.py) MergeVcf \
+        pypy $(which clair3.py) MergeVcf \
             --pileup_vcf_fn !{pile_up_vcf} \
             --bed_fn_prefix !{bed_files} \
             --full_alignment_vcf_fn !{full_aln_vcf} \
@@ -595,7 +581,7 @@ process run_clair3_stage_7b{
         '''
         . env.sh !{bam} !{bed} !{ref} "clair_output"
         
-        !{params.pypy} $(which clair3.py) SortVcf \
+        pypy $(which clair3.py) SortVcf \
             --input_dir merge_output \
             --output_fn merge_output.vcf \
             --sampleName !{params.sample_name} \
@@ -609,7 +595,7 @@ process run_clair3_stage_7b{
 
         if [ !{params.GVCF} == True ]; \
             then cat clair_output/tmp/merge_output/merge_*.gvcf | \
-                !{params.pypy} $(which clair3.py) SortVcf --output_fn clair_output/merge_output.gvcf; \
+                pypy $(which clair3.py) SortVcf --output_fn clair_output/merge_output.gvcf; \
         fi
 
         echo $''
