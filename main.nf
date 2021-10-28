@@ -41,10 +41,8 @@ process run_clair3_stage_1a {
     label "clair3"
     cpus params.threads
     input:
-        path bam
-        path bai
-        path ref
-        path fai
+        tuple path(bam), path(bai)
+        tuple path(ref), path(fai)
         path bed
     output:
         path "clair_output/tmp/CONTIGS", emit: contigs_file
@@ -121,15 +119,13 @@ process generate_regions {
 
 
 process run_clair3_stage_1b {
+    // Calls variants per region ("chunk") using pileup network.
     label "clair3"
     cpus params.threads
     input:
         each region
-        path bam
-        path bai
-        path ref
-        path fai
-        path "clair_output/tmp/gvcf_tmp_output"
+        tuple path(bam), path(bai)
+        tuple path(ref), path(fai)
         path model
     output:
         path "clair_output/tmp/pileup_output/*", optional: true, emit: "tmp_pileup_output"
@@ -158,15 +154,16 @@ process run_clair3_stage_1b {
 
 
 process run_clair3_stage_1c {
+    // Aggregates and sorts all variants (across all chunks of all contigs)
+    // from pileup network.
     label "clair3"
     cpus params.threads
     input:
-        path ref
+        tuple path(ref), path(fai)
         path "clair_output/tmp/pileup_output/"
         path contigs
     output:
-        path "clair_output/pileup.vcf.gz", emit: pileup_gz
-        path "clair_output/pileup.vcf.gz.tbi", emit: pileup_gz_tbi
+        tuple path("clair_output/pileup.vcf.gz"), path("clair_output/pileup.vcf.gz.tbi"), emit: pileup_vcf
     shell:
         '''
         pypy $(which clair3.py) SortVcf \
@@ -184,58 +181,56 @@ process run_clair3_stage_1c {
 
 // TODO: combine this with the previous to avoid a step
 process run_clair3_stage_2a {
+    // Filters a VCF (by quality?) for the purposes of input to whatshap for phasing.
     label "clair3"
     cpus params.threads
     input:
-        path "clair_output/pileup.vcf.gz"
-        path "clair_output/pileup.vcf.gz.tbi"
+        tuple path("pileup.vcf.gz"), path("pileup.vcf.gz.tbi")
     output:
-        path "clair_output/tmp/phase_output/phase_vcf/phase_qual", emit: phase_qual
+        path "phase_vcf/phase_qual", emit: phase_qual
     shell:
         '''
-        mkdir -p "clair_output/tmp/phase_output/phase_vcf"
+        mkdir -p phase_vcf
         echo "[INFO] 2/7 Select heterozygous SNP variants for Whatshap phasing and haplotagging"
-        gzip \
-            -fdc clair_output/pileup.vcf.gz | \
-            pypy $(which clair3.py) SelectQual \
-                --phase \
-                --output_fn clair_output/tmp/phase_output/phase_vcf
+        gzip -fdc pileup.vcf.gz | \
+            pypy $(which clair3.py) SelectQual --phase --output_fn phase_vcf
         '''
 }
 
 
 process run_clair3_stage_2b {
+    // Filters a VCF by contig, selecting only het SNPs.
     label "clair3"
     cpus params.threads
     input:
         each contig
-        path "clair_output/pileup.vcf.gz"
-        path "clair_output/pileup.vcf.gz.tbi"
-        path "clair_output/tmp/phase_output/phase_vcf/phase_qual"
+        tuple path("pileup.vcf.gz"), path("pileup.vcf.gz.tbi")
+        path "phase_vcf/phase_qual"
     output:
-        path "clair_output/tmp/phase_output/phase_vcf", emit: phase_vcf_dir
+        // TODO: this looks nasty: we're outputting a superset of the input.
+        //       Don't we want to simply the outputs?
+        path "phase_vcf", emit: phase_vcf_dir
     shell:
         '''
-        mkdir -p "/tmp/phase_output/phase_vcf"
         pypy $(which clair3.py) SelectHetSnp \
-            --vcf_fn clair_output/pileup.vcf.gz \
-            --split_folder clair_output/tmp/phase_output/phase_vcf \
+            --vcf_fn pileup.vcf.gz \
+            --split_folder phase_vcf \
             --ctgName !{contig}
         '''
 }
 
 
-process run_clair3_stage_3{
+process run_clair3_stage_3 {
+    // Phases a VCF using whatshap.
     label "clair3"
     cpus params.threads
     input:
         each contig
-        path bam
-        path bai
-        path ref
-        path fai
+        tuple path(bam), path(bai)
+        tuple path(ref), path(fai)
         path "clair_output/tmp/phase_output/phase_vcf"
     output:
+        // TODO: should we be just returning the phased vcf?
         path "clair_output/tmp/phase_output/phase_vcf", emit: "phase_vcf_dir"
     shell:
         '''
@@ -255,19 +250,21 @@ process run_clair3_stage_3{
 }
 
 
-process run_clair3_stage_4{
+process run_clair3_stage_4 {
+    // Tags reads in a BAM with haplotype information using a VCF.
     label "clair3"
     cpus params.threads
     input:
+        // TODO: THIS IS INCORRECT
+        //       the third input here is a channel containing phased vcfs, one item
+        //       per contig. We shouldn't be using "each contig" here, the op is
+        //       a no-op in the case of a single contig.
         each contig
-        path bam
-        path bai
-        path ref
-        path fai
+        tuple path(bam), path(bai)
+        tuple path(ref), path(fai)
         path "clair_output/tmp/phase_output/phase_vcf"
     output:
-        path "clair_output/tmp/phase_output/phase_bam/*.bam", emit: phased_bam
-        path "clair_output/tmp/phase_output/phase_bam/*.bam.bai", emit: phased_bam_index
+        tuple path("clair_output/tmp/phase_output/phase_bam/*.bam"), path("clair_output/tmp/phase_output/phase_bam/*.bam.bai"), emit: phased_bam
         path "clair_output/tmp/phase_output/phase_vcf/*.vcf.gz", emit: phased_vcf
     shell:
         '''
@@ -288,23 +285,24 @@ process run_clair3_stage_4{
 }
 
 
-process run_clair3_stage_5a{
+process run_clair3_stage_5a {
+    // Determines quality filter for selecting candidate variants for
+    // second stage "full alignment" calling
     label "clair3"
     cpus params.threads
     input:
-        path "clair_output/pileup.vcf.gz"
-        path "clair_output/pileup.vcf.gz.tbi"
+        tuple path("pileup.vcf.gz"), path("pileup.vcf.gz.tbi")
     output:
-        path "clair_output/tmp/full_alignment_output/candidate_bed/qual", emit: full_qual
+        path "qual", emit: full_qual
     shell:
         '''
         # Full alignment calling
         echo "[INFO] 5/7 Select candidates for full-alignment calling"
         mkdir -p clair_output/tmp/full_alignment_output
         mkdir -p clair_output/tmp/full_alignment_output/candidate_bed
-        gzip -fdc clair_output/pileup.vcf.gz | \
+        gzip -fdc pileup.vcf.gz | \
         pypy $(which clair3.py) SelectQual \
-                --output_fn clair_output/tmp/full_alignment_output/candidate_bed \
+                --output_fn . \
                 --var_pct_full !{params.var_pct_full} \
                 --ref_pct_full !{params.ref_pct_full} \
                 --platform ont 
@@ -312,24 +310,28 @@ process run_clair3_stage_5a{
 }
 
 
-process run_clair3_stage_5b{
+process run_clair3_stage_5b {
+    // Create BED files for candidate variants for "full alignment" network.
     label "clair3"
     cpus params.threads
     input:
         each contig
-        path ref
-        path fai
-        path "clair_output/pileup.vcf.gz"
-        path "clair_output/pileup.vcf.gz.tbi"
-        path "clair_output/tmp/full_alignment_output/candidate_bed/qual"
+        tuple path(ref), path(fai)
+        tuple path("pileup.vcf.gz"), path("pileup.vcf.gz.tbi")
+        path "candidate_bed/qual"
     output:
-        path "clair_output", emit: clair
-        path "clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILE_*", emit: aln_bed
+        path "candidate_bed/${contig}.*", emit: candidate_bed
     shell:
+        // this creates BED files as candidate_bed/<ctg>.0_14 with candidates
+        // along with a file the FULL_ALN_FILE_<ctg> listing all of the BED files.
+        // All we really want are the BEDs, the file of filenames is used for the
+        // purposes of parallel in the original workflow.
+        // https://github.com/HKU-BAL/Clair3/blob/329d09b39c12b6d8d9097aeb1fe9ec740b9334f6/scripts/clair3.sh#L218
         '''
+        mkdir -p clair_output/tmp/full_alignment_output/candidate_bed 
         pypy $(which clair3.py) SelectCandidates \
-            --pileup_vcf_fn clair_output/pileup.vcf.gz \
-            --split_folder clair_output/tmp/full_alignment_output/candidate_bed \
+            --pileup_vcf_fn pileup.vcf.gz \
+            --split_folder candidate_bed \
             --ref_fn !{ref} \
             --var_pct_full !{params.var_pct_full} \
             --ref_pct_full !{params.ref_pct_full} \
@@ -339,43 +341,22 @@ process run_clair3_stage_5b{
 }
 
 
-// TODO: erm....
-process run_clair3_stage_6a {
-    label "clair3"
-    cpus params.threads
-    input:
-        path "clair_output"
-    output:
-        path "clair_output", emit: clair
-        path "clair_output/tmp/full_alignment_output/candidate_bed/chr*", emit: full_alignment
-        stdout
-    shell:
-        '''
-        cat clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILE_* > clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES
-        cat clair_output/tmp/full_alignment_output/candidate_bed/FULL_ALN_FILES
-        '''
-}
 
-
-// TODO: in the original --cgtName, --full_aln_regions, --bam_fn are all derived from info contained
-//       in the alignment sections file. Here thats all be mangled.
 process run_clair3_stage_6b {
     label "clair3"
     cpus params.threads
     input:
-        path ref
-        path fai
+        tuple path(ref), path(fai)
         path model
-        path phased_bam
-        path phased_bam_index
-        each alignment_path
-        path "alignment_sections/*"
-        each contig
+        tuple path(phased_bam), path(phased_bam_index)
+        each path(candidate_bed)
     output:
         path "clair_output/full_alignment_*.vcf", emit: full_alignment
     script:
-        f = file(alignment_path)
+        // TODO: clean this up. 
+        f = file(candidate_bed)
         filename = f.getName()
+        contig = "chr20"
         """
         mkdir clair_output
         echo "[INFO] 6/7 Call low-quality variants using full-alignment model"
@@ -384,7 +365,7 @@ process run_clair3_stage_6b {
             --bam_fn $phased_bam \
             --call_fn clair_output/full_alignment_${filename}.vcf \
             --ref_fn $ref \
-            --full_aln_regions alignment_sections/${filename} \
+            --full_aln_regions $candidate_bed \
             --ctgName $contig \
             --phasing_info_in_bam \
             --snp_min_af ${params.snp_min_af} \
@@ -400,13 +381,11 @@ process run_clair3_stage_6c {
     label "clair3"
     cpus params.threads
     input:
-        path ref
-        path fai
+        tuple path(ref), path(fai)
         path "full_alignment/*"
         path contigs
     output:
-        path "full_alignment.vcf.gz", emit: merged_alignment
-        path "full_alignment.vcf.gz.tbi"
+        tuple path("full_alignment.vcf.gz"), path("full_alignment.vcf.gz.tbi"), emit: full_aln_vcf
     shell:
         '''
         pypy $(which clair3.py) SortVcf \
@@ -441,12 +420,13 @@ process bed_files_to_folder{
         path full_alignment
     output:
         path "candidate_bed", emit: bed_files
-    """
-     mkdir candidate_bed
-     mv $full_qual candidate_bed
-     mv $aln_bed candidate_bed
-     mv $full_alignment candidate_bed
-    """
+    script:
+        """
+        mkdir candidate_bed
+        mv $full_qual candidate_bed
+        mv $aln_bed candidate_bed
+        mv $full_alignment candidate_bed
+        """
 }
 
 
@@ -455,11 +435,10 @@ process run_clair3_stage_7a{
     cpus params.threads
     input:
         each contig
-        path ref
-        path fai
-        path pile_up_vcf
-        path full_aln_vcf
-        path bed_files
+        tuple path(ref), path(fai)
+        tuple path(pile_up_vcf), path(pile_up_vcf_tbi)
+        tuple path(full_aln_vcf), path(full_aln_vcf_tbi)
+        path "candidate_beds/*"
     output:
         path "clair_output", emit: clair
         path "clair_output/tmp/merge_output/merge_*.vcf", emit: merge_output
@@ -469,7 +448,7 @@ process run_clair3_stage_7a{
         echo "[INFO] 7/7 Merge pileup VCF and full-alignment VCF"
         pypy $(which clair3.py) MergeVcf \
             --pileup_vcf_fn !{pile_up_vcf} \
-            --bed_fn_prefix !{bed_files} \
+            --bed_fn_prefix candidate_beds \
             --full_alignment_vcf_fn !{full_aln_vcf} \
             --output_fn clair_output/tmp/merge_output/merge_!{contig}.vcf \
             --platform ont \
@@ -489,13 +468,11 @@ process run_clair3_stage_7b{
     label "clair3"
     cpus params.threads
     input:
-        path ref
-        path fai
+        tuple path(ref), path(fai)
         path "merge_output/*"
         path contigs
     output:
-        path "merge_output.vcf.gz", emit: merge_output
-        path "merge_output.vcf.gz.tbi"
+        tuple path("merge_output.vcf.gz"), path("merge_output.vcf.gz.tbi"), emit: final_vcf
     shell:
         '''
         pypy $(which clair3.py) SortVcf \
@@ -510,37 +487,37 @@ process run_clair3_stage_7b{
             exit 0; \
         fi
 
+        # TODO: this looks broken
         if [ !{params.GVCF} == True ]; \
             then cat clair_output/tmp/merge_output/merge_*.gvcf | \
                 pypy $(which clair3.py) SortVcf --output_fn clair_output/merge_output.gvcf; \
         fi
 
-        echo "[INFO] Finish calling, output file: clair_putput/merge_output.vcf.gz"
+        echo "[INFO] Finish calling, output file: merge_output.vcf.gz"
         '''
 }
 
 
+// TODO: test this
 process hap {
     label "happy"
     input:
-        path clair_output
-        path ref
-        path fai
-        path bed
-        path vcf
-        path vcf_bed
+        path "clair.vcf.gz"
+        tuple path("ref.fasta"), path("ref.fasta.fai")
+        path "truth.vcf"
+        path "truth.bed"
     output:
-        path "hap_output"
+        path "happy"
     """
     mkdir hap_output
     ls -l $vcf
     ls -l ${clair_output}/full_alignment.vcf.gz
     /opt/hap.py/bin/hap.py \
-        "${vcf}" \
-        "${clair_output}/full_alignment.vcf.gz" \
-        -f ${vcf_bed} \
-        -r ${ref} \
-        -o "hap_output/happy" \
+        truth.vcf \
+        clair.vcf.gz \
+        -f truth.bed \
+        -r ref.fasta \
+        -o happy \
         --engine=vcfeval \
         --threads=${params.threads} \
         --pass-only
@@ -569,81 +546,69 @@ process output {
 workflow pipeline {
     take:
         bam
-        bai
         bed
         ref
-        fai
         model
     main:
         // TODO: what are regions, contigs, regions2?
-        clair_output = run_clair3_stage_1a(bam, bai, ref, fai, bed)
+        run_clair3_stage_1a(bam, ref, bed)
         regions =  generate_chunks(run_clair3_stage_1a.out.chunks_file).splitText().map(it -> it.trim())
         contigs = generate_contigs(run_clair3_stage_1a.out.contigs_file).splitText().map(it -> it.trim())
         regions2 = generate_regions(regions)
-        clair_output =  run_clair3_stage_1b(
-            regions2.regions, 
-            bam, bai, ref, fai, 
-            run_clair3_stage_1a.out.gvcf_tmp_output,
-            model
-            )
-        clair_output = run_clair3_stage_1c(
-            ref,
-            run_clair3_stage_1b.out.tmp_pileup_output.collect(),
-            run_clair3_stage_1a.out.contigs_file
-            )
-        clair_output = run_clair3_stage_2a(
-            run_clair3_stage_1c.out.pileup_gz,
-            run_clair3_stage_1c.out.pileup_gz_tbi
-            )
-        clair_output = run_clair3_stage_2b(
+        regions2.regions.view()
+
+        run_clair3_stage_1b(regions2.regions, bam, ref, model)
+        run_clair3_stage_1c(ref, run_clair3_stage_1b.out.tmp_pileup_output.collect(), run_clair3_stage_1a.out.contigs_file)
+
+        // TODO: these should be combined
+        run_clair3_stage_2a(run_clair3_stage_1c.out.pileup_vcf)
+        run_clair3_stage_2b(
             contigs,
-            run_clair3_stage_1c.out.pileup_gz,
-            run_clair3_stage_1c.out.pileup_gz_tbi,
-            run_clair3_stage_2a.out.phase_qual 
-            )
-        clair_output = run_clair3_stage_3(
-            contigs, bam, bai, ref, fai,
-            run_clair3_stage_2b.out.phase_vcf_dir 
-            )
-        clair_output = run_clair3_stage_4(
-            contigs, bam, bai, ref, fai,
-            run_clair3_stage_3.out.phase_vcf_dir,
-            )
-        clair_output = run_clair3_stage_5a(
-            run_clair3_stage_1c.out.pileup_gz,
-            run_clair3_stage_1c.out.pileup_gz_tbi,
-            )
-        clair_output = run_clair3_stage_5b(
-            contigs, ref, fai, 
-            run_clair3_stage_1c.out.pileup_gz,
-            run_clair3_stage_1c.out.pileup_gz_tbi,
+            run_clair3_stage_1c.out.pileup_vcf,
+            run_clair3_stage_2a.out.phase_qual)
+
+        run_clair3_stage_3(
+            contigs, bam, ref,
+            run_clair3_stage_2b.out.phase_vcf_dir)
+
+        run_clair3_stage_4(
+            contigs, bam, ref,
+            run_clair3_stage_3.out.phase_vcf_dir)
+
+        run_clair3_stage_5a(run_clair3_stage_1c.out.pileup_vcf)
+        run_clair3_stage_5b(
+            contigs, ref, 
+            run_clair3_stage_1c.out.pileup_vcf,
             run_clair3_stage_5a.out.full_qual)
-        clair_output_test = run_clair3_stage_6a(
-            run_clair3_stage_5b.out.clair)
-        full_aln_paths = run_clair3_stage_5b.out.aln_bed.splitText().map(it -> it.trim())
-        clair_output_6b = run_clair3_stage_6b(
-            ref, fai,
-            model,
+
+        candidate_beds = run_clair3_stage_5b.out.candidate_bed.flatten()
+        // TODO: need to match candidate beds (multiple per contig) with
+        //       the correct phased bam
+        run_clair3_stage_6b(
+            ref, model,
             run_clair3_stage_4.out.phased_bam,
-            run_clair3_stage_4.out.phased_bam_index,
-            full_aln_paths,
-            run_clair3_stage_6a.out.full_alignment,
-            contigs)
-        clair_output = run_clair3_stage_6c(
-            ref, fai,
+            candidate_beds)
+        run_clair3_stage_6c(
+            ref,
             run_clair3_stage_6b.out.full_alignment.collect(),
             run_clair3_stage_1a.out.contigs_file)
-        candidate_bed = bed_files_to_folder(
-            run_clair3_stage_5a.out.full_qual,
-            run_clair3_stage_5b.out.aln_bed,
-            run_clair3_stage_6a.out.full_alignment
-            )
-        clair_output = run_clair3_stage_7a(
-            contigs, ref, fai,
-            run_clair3_stage_1c.out.pileup_gz,  run_clair3_stage_6c.out.merged_alignment,
-            candidate_bed.bed_files)
+
+        //bed_files_to_folder(
+        //    run_clair3_stage_5a.out.full_qual,
+        //    run_clair3_stage_5b.out.aln_bed,
+        //    run_clair3_stage_6a.out.full_alignment
+        //    )
+
+        // Merge VCFs, could this been done at the contig level
+        // for added parallelism?
+        run_clair3_stage_7a(
+            contigs, ref,
+            run_clair3_stage_1c.out.pileup_vcf,
+            run_clair3_stage_6c.out.full_aln_vcf,
+            candidate_beds.collect())
+
         clair_final = run_clair3_stage_7b(
-            ref, fai,
+            ref,
             run_clair3_stage_7a.out.merge_output.collect(),
             run_clair3_stage_1a.out.contigs_file)
     emit:
@@ -654,15 +619,13 @@ workflow pipeline {
 workflow pipeline_with_hap {
     take:
         bam
-        bai
         bed
         ref
-        fai
         vcf
         vcf_bed
     main:
-        clair_output = pipeline(bam, bai, bed, ref, fai)
-        hap_output = hap(clair_output, ref, fai, bed, vcf, vcf_bed)
+        clair_vcf = pipeline(bam, bed, ref)
+        hap_output = hap(clair_vcf, ref, vcf, vcf_bed)
     emit:
         clair_output
         hap_output
@@ -689,66 +652,37 @@ workflow download_demo {
 
 // entrypoint workflow
 workflow {
-
-if (params.help) {
+    if (params.help) {
         helpMessage()
         exit 1
     } else if (params.download) {
         demo_files = download_demo()
         output(demo_files)
     } else {
-        if (!params.bam) {
-            helpMessage()
-            println("")
-            println("`--bam` is required")
-            exit 1
-        }
-        bai = file(params.bam + ".bai")
-        if (!bai.exists()){
-            helpMessage()
-            println("")
-            println("Bam file missing index: ($bai)")
-            exit 1
-        }
-        if (!params.bed) {
-            helpMessage()
-            println("")
-            println("`--bed` is required")
-            exit 1
-        }
-        if (!params.ref) {
-            helpMessage()
-            println("")
-            println("`--ref` is required")
-            exit 1
-        }
-        fai = file(params.ref + ".fai")
-        if (!fai.exists()) {
-            helpMessage()
-            println("")
-            println("`ref file missing index: (${fai})")
-            exit 1
-        }
-        ref = file(params.ref, type: "file")
-        fai = channel.fromPath(fai, checkIfExists:true)
-        bam = file(params.bam, type: "file")
-        bai = channel.fromPath(bai, checkIfExists:true)
-        bed = file(params.bed, type: "file")
-        model = file(params.model, type: "dir")
-        if (params.vcf){
-            vcf = channel.fromPath(params.vcf, checkIfExists:true)
-            tbi = file(params.vcf + ".tbi")
-            if (!tbi.exists()){
-                helpMessage()
-                println("")
-                println("`vcf file missing index: (${tbi})")
-                exit 1
-            }
-            vcf_bed = channel.fromPath(params.vcf_bed, checkIfExists:true)
-            pipeline_output = pipeline_with_hap(bam, bai, bed, ref, fai, vcf, vcf_bed)
-            output(pipeline_output[0].concat(pipeline_output[1]))
+        // TODO: why do we need a fai? is this a race condition on
+        //       on multiple processes trying to create it?
+        //       We should likely use https://www.nextflow.io/docs/latest/process.html#storedir
+        //       for these things
+        ref = Channel.fromPath(params.ref, checkIfExists: true)
+        fai = Channel.fromPath(params.ref + ".fai", checkIfExists: true)
+        ref = ref.concat(fai).buffer(size: 2)
+
+        bam = Channel.fromPath(params.bam, checkIfExists: true)
+        bai = Channel.fromPath(params.bam + ".bai", checkIfExists: true)
+        bam = bam.concat(bai).buffer(size: 2)
+
+        // TODO: do we really need a bed? Whats it used for?
+        bed = Channel.fromPath(params.bed, checkIfExists: true)
+        model = Channel.fromPath(params.model, type: "dir", checkIfExists: true)
+ 
+        if (params.vcf){  // TODO: rename vcf -- its truth VCF for benchmarking
+            vcf = Channel.fromPath(params.vcf, checkIfExists:true)
+            vcf_bed = Channel.fromPath(params.vcf_bed, checkIfExists:true)
+            outputs = pipeline_with_hap(bam, bed, ref, vcf, vcf_bed)
+            output(
+                outputs[0].concat(outputs[1]).flatten())
         } else {
-            pipeline_output = pipeline(bam, bai, bed, ref, fai, model)
+            pipeline_output = pipeline(bam, bed, ref, model)
             output(pipeline_output)
         }
     }
