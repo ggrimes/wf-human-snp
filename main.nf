@@ -10,7 +10,7 @@ params.threads = 4
 params.download = ""
 
 params.sample_name = "SAMPLE"
-params.vcf_fn = "EMPTY"  // use as external candidates
+params.vcf_fn = "EMPTY"  // used as external candidates, not plumbed in
 params.ctg_name = "EMPTY"
 params.include_all_ctgs = "False"
 params.ref_pct_full = 0.1
@@ -38,7 +38,11 @@ Script Options:
 """
 }
 
-process run_clair3_stage_1a {
+
+process make_chunks {
+    // Do some preliminaries. Ordinarily this would setup a working directory
+    // that all other commands would make use off, but all we need here are the
+    // list of contigs and chunks.
     label "clair3"
     cpus params.threads
     input:
@@ -48,7 +52,6 @@ process run_clair3_stage_1a {
     output:
         path "clair_output/tmp/CONTIGS", emit: contigs_file
         path "clair_output/tmp/CHUNK_LIST", emit: chunks_file
-        path "clair_output/tmp/gvcf_tmp_output", emit: gvcf_tmp_output
     shell:
         '''
         mkdir -p clair_output
@@ -73,53 +76,7 @@ process run_clair3_stage_1a {
 }
 
 
-// TODO: this doesn't need to be a process
-process generate_chunks {
-    label "clair3"
-    cpus params.threads
-    input:
-        path "CHUNK_LIST"
-    output:
-        stdout
-    shell:
-        '''
-        #!/usr/bin/env python
-        with open("CHUNK_LIST") as f:
-            for chunk in f:
-                print(chunk.strip())
-        '''
-}
-
-
-// TODO: this doesn't need to be a process
-process generate_contigs {
-    label "clair3"
-    cpus params.threads
-    input:
-        path "CONTIGS"
-    output:
-        stdout
-    shell:
-        '''
-        #!/usr/bin/env python
-        with open("CONTIGS") as f:
-            for contig in f:
-                print(contig.strip())
-        '''
-}
-
-
-// TODO: this doesn't need to be a process
-process generate_regions {
-    input:
-        val region
-    output:
-        tuple val(contig), val(chunk_id), val(chunk_num), emit: regions
-    exec: (_, contig, _, chunk_id, _, chunk_num) = (region =~ /(.+)(\s)(.+)(\s)(.+)/)[0]    
-}
-
-
-process run_clair3_stage_1b {
+process pileup_variants {
     // Calls variants per region ("chunk") using pileup network.
     label "clair3"
     cpus params.threads
@@ -135,19 +92,15 @@ process run_clair3_stage_1b {
     script:
         // note: the VCF output here is required to use the contig
         //       name since that's parsed in the SortVcf step
-        contig=region[0]
-        chunk_id=region[1]
-        chunk_num=region[2]
         """
-        # TODO: plumb in option gvcf output path
         python \$(which clair3.py) CallVarBam \
             --chkpnt_fn ${model}/pileup \
             --bam_fn ${bam} \
-            --call_fn pileup_${contig}_${chunk_id}.vcf \
+            --call_fn pileup_${region.contig}_${region.chunk_id}.vcf \
             --ref_fn ${ref} \
-            --ctgName ${contig} \
-            --chunk_id ${chunk_id} \
-            --chunk_num ${chunk_num} \
+            --ctgName ${region.contig} \
+            --chunk_id ${region.chunk_id} \
+            --chunk_num ${region.total_chunks} \
             --platform ont \
             --fast_mode False \
             --snp_min_af ${params.snp_min_af} \
@@ -160,10 +113,10 @@ process run_clair3_stage_1b {
 }
 
 
-process run_clair3_stage_1c {
+process aggregate_pileup_variants {
     // Aggregates and sorts all variants (across all chunks of all contigs)
     // from pileup network. Determines quality filter for selecting variants
-    // to use for phasing
+    // to use for phasing.
     label "clair3"
     cpus params.threads
     input:
@@ -194,7 +147,7 @@ process run_clair3_stage_1c {
 }
 
 
-process run_clair3_stage_2b {
+process select_het_snps {
     // Filters a VCF by contig, selecting only het SNPs.
     label "clair3"
     cpus params.threads
@@ -205,7 +158,7 @@ process run_clair3_stage_2b {
         // https://github.com/HKU-BAL/Clair3/blob/329d09b39c12b6d8d9097aeb1fe9ec740b9334f6/preprocess/SelectHetSnp.py#L29
         path "split_folder/phase_qual"
     output:
-        tuple val("chr20"), path("split_folder/chr20.vcf"), emit: het_snps_vcf
+        tuple val(contig), path("split_folder/${contig}.vcf"), emit: het_snps_vcf
     shell:
         '''
         pypy $(which clair3.py) SelectHetSnp \
@@ -216,8 +169,9 @@ process run_clair3_stage_2b {
 }
 
 
-process run_clair3_stage_3 {
-    // Phases a VCF using whatshap.
+process phase_contig {
+    // Phases a VCF using whatshap and selected het SNPS. Tags reads in the
+    // input BAM.
     label "clair3"
     cpus params.threads
     input:
@@ -251,9 +205,9 @@ process run_clair3_stage_3 {
 }
 
 
-process run_clair3_stage_5a {
-    // Determines quality filter for selecting candidate variants for
-    // second stage "full alignment" calling
+process get_qual_filter {
+    // Determines quality filter for selecting candidate variants for second
+    // stage "full alignment" calling.
     label "clair3"
     cpus params.threads
     input:
@@ -274,7 +228,7 @@ process run_clair3_stage_5a {
 }
 
 
-process run_clair3_stage_5b {
+process create_candidates {
     // Create BED files for candidate variants for "full alignment" network
     // from the previous full "pileup" variants across all chunks of all chroms
     //
@@ -291,11 +245,14 @@ process run_clair3_stage_5b {
     output:
         tuple val(contig), path("candidate_bed/${contig}.*"), emit: candidate_bed
     shell:
-        // this creates BED files as candidate_bed/<ctg>.0_14 with candidates
-        // along with a file the FULL_ALN_FILE_<ctg> listing all of the BED files.
-        // All we really want are the BEDs, the file of filenames is used for the
-        // purposes of parallel in the original workflow.
+        // This creates BED files as candidate_bed/<ctg>.0_14 with candidates
+        // along with a file the FULL_ALN_FILE_<ctg> listing all of the BED
+        // files.  All we really want are the BEDs, the file of filenames is
+        // used for the purposes of parallel in the original workflow.
         // https://github.com/HKU-BAL/Clair3/blob/329d09b39c12b6d8d9097aeb1fe9ec740b9334f6/scripts/clair3.sh#L218
+
+        // TODO: would be nice to control the number of BEDs produced to enable
+        // better parallelism.
         '''
         pypy $(which clair3.py) SelectCandidates \
             --pileup_vcf_fn pileup.vcf.gz \
@@ -309,8 +266,8 @@ process run_clair3_stage_5b {
 }
 
 
-process run_clair3_stage_6b {
-    // Run "full alignment" network for variants in candidate bed files.
+process evaluate_candidates {
+    // Run "full alignment" network for variants in a candidate bed file.
     label "clair3"
     cpus params.threads
     input:
@@ -322,8 +279,7 @@ process run_clair3_stage_6b {
         path "output/full_alignment_*.vcf", emit: full_alignment
     script:
         // TODO: clean this up. 
-        f = file(candidate_bed)
-        filename = f.getName()
+        filename = file(candidate_bed).getName()
         """
         mkdir output
         echo "[INFO] 6/7 Call low-quality variants using full-alignment model"
@@ -345,7 +301,7 @@ process run_clair3_stage_6b {
 }
 
 
-process run_clair3_stage_6c {
+process aggregate_full_align_variants {
     // Sort and merge all "full alignment" variants
     label "clair3"
     cpus params.threads
@@ -385,7 +341,8 @@ process run_clair3_stage_6c {
 }
 
 
-process run_clair3_stage_7a{
+process merge_pileup_and_full_vars{
+    // Merge VCFs
     label "clair3"
     cpus params.threads
     input:
@@ -400,7 +357,6 @@ process run_clair3_stage_7a{
         path "output/merge_${contig}.gvcf", optional: true, emit: merged_gvcf
     shell:
         '''
-        # TODO: plumb in non_var.gvcf file channel
         mkdir output
         echo "[INFO] 7/7 Merge pileup VCF and full-alignment VCF"
         pypy $(which clair3.py) MergeVcf \
@@ -421,7 +377,7 @@ process run_clair3_stage_7a{
 }
 
 
-process run_clair3_stage_7b{
+process aggregate_all_variants{
     label "clair3"
     cpus params.threads
     input:
@@ -463,20 +419,17 @@ process run_clair3_stage_7b{
 }
 
 
-// TODO: test this
 process hap {
     label "happy"
     input:
-        path "clair.vcf.gz"
+        tuple path("clair.vcf.gz"), path("clair.vcf.gz.tbi")
         tuple path("ref.fasta"), path("ref.fasta.fai")
         path "truth.vcf"
         path "truth.bed"
     output:
         path "happy"
     """
-    mkdir hap_output
-    ls -l $vcf
-    ls -l ${clair_output}/full_alignment.vcf.gz
+    mkdir happy
     /opt/hap.py/bin/hap.py \
         truth.vcf \
         clair.vcf.gz \
@@ -508,109 +461,139 @@ process output {
 
 
 // workflow module
-workflow pipeline {
+workflow clair3 {
     take:
         bam
         bed
         ref
         model
     main:
-        // TODO: what are regions, contigs, regions2?
-        run_clair3_stage_1a(bam, ref, bed)
-        regions =  generate_chunks(run_clair3_stage_1a.out.chunks_file).splitText().map(it -> it.trim())
-        contigs = generate_contigs(run_clair3_stage_1a.out.contigs_file).splitText().map(it -> it.trim())
-        regions2 = generate_regions(regions)
-        regions2.regions.dump(tag: 'regions')
+        // Run preliminaries to find contigs and generate regions to process in
+        // parallel.
+        // > Step 0
+        make_chunks(bam, ref, bed)
+        chunks = make_chunks.out.chunks_file
+            .splitText(){ 
+                cols = (it =~ /(.+)\s(.+)\s(.+)/)[0]
+                ["contig": cols[1], "chunk_id":cols[2], "total_chunks":cols[3]]}
+        contigs = make_chunks.out.contigs_file.splitText() { it.trim() }
 
-        run_clair3_stage_1b(regions2.regions, bam, ref, model)
-        run_clair3_stage_1c(ref, run_clair3_stage_1b.out.pileup_vcf_chunks.collect(), run_clair3_stage_1a.out.contigs_file)
+        // Run the "pileup" caller on all chunks and collate results
+        // > Step 1 
+        pileup_variants(chunks, bam, ref, model)
+        aggregate_pileup_variants(
+            ref, pileup_variants.out.pileup_vcf_chunks.collect(),
+            make_chunks.out.contigs_file)
 
-        run_clair3_stage_2b(
+        // Filter collated results to produce per-contig SNPs for phasing.
+        // > Step 2
+        select_het_snps(
             contigs,
-            run_clair3_stage_1c.out.pileup_vcf,
-            run_clair3_stage_1c.out.phase_qual)
+            aggregate_pileup_variants.out.pileup_vcf,
+            aggregate_pileup_variants.out.phase_qual)
 
+        // Perform whatshap phasing for each contig.  
         // `each` doesn't work with tuples, so we have to make the product ourselves
-        phase_inputs = run_clair3_stage_2b.out.het_snps_vcf.combine(bam).combine(ref)
-        run_clair3_stage_3(phase_inputs)
+        phase_inputs = select_het_snps.out.het_snps_vcf
+            .combine(bam).combine(ref)
+        // > Step 3 + Step 4
+        phase_contig(phase_inputs)
 
-        run_clair3_stage_5a(run_clair3_stage_1c.out.pileup_vcf)
-        run_clair3_stage_5b(
+        // Find quality filter to select variants for "full alignment"
+        // processing, then generate bed files containing the candidates.
+        // > Step 5
+        get_qual_filter(aggregate_pileup_variants.out.pileup_vcf)
+        create_candidates(
             contigs, ref, 
-            run_clair3_stage_1c.out.pileup_vcf,
-            run_clair3_stage_5a.out.full_qual)
+            aggregate_pileup_variants.out.pileup_vcf,
+            get_qual_filter.out.full_qual)
 
-        // Have to go through a bit of a song and dance here, stay with me.
-        candidate_beds = run_clair3_stage_5b.out.candidate_bed.flatMap {
+        // Run the "full alignment" network on candidates. Have to go through a
+        // bit of a song and dance here to generate our input channels here
+        // with various things duplicated (again because of limitations on 
+        // `each` and tuples).
+        // > Step 6
+        candidate_beds = create_candidates.out.candidate_bed.flatMap {
             x ->
+                // output globs can return a list or single item
                 y = x[1]; if(! (y instanceof java.util.ArrayList)){y = [y]}
-                y.collect { [x[0], it] } }  // [chr, bed]
-        bams_beds_and_stuff = run_clair3_stage_3.out.phased_bam
+                // effectively duplicate chr for all beds - [chr, bed]
+                y.collect { [x[0], it] } }
+        // produce something emitting: [[chr, bam, bai], [chr20, bed], [ref, fai], model]
+        bams_beds_and_stuff = phase_contig.out.phased_bam
             .cross(candidate_beds)
             .combine(ref.map {it->[it]})
-            .combine(model) // [[chr, bam, bai], [chr20, bed], [ref, fai], model] 
-
-        bams_beds_and_stuff.multiMap { it ->
-            bams: it[0]
-            candidates: it[1]
-            ref: it[2]
-            model: it[3]
-        }.set { mangled }
-        run_clair3_stage_6b(
+            .combine(model)
+        // take the above and destructure it for easy reading
+        bams_beds_and_stuff.multiMap {
+            it ->
+                bams: it[0]
+                candidates: it[1]
+                ref: it[2]
+                model: it[3]
+            }.set { mangled }
+        // phew! Run all-the-things
+        evaluate_candidates(
             mangled.bams, mangled.candidates, mangled.ref, mangled.model)
+
         // merge and sort all files for all chunks for all contigs
         // gvcf is optional, stuff an empty file in, so we have at least one
         // item to flatten/collect and tthis stage can run.
-        gvcfs = run_clair3_stage_1b.out.pileup_gvcf_chunks
+        gvcfs = pileup_variants.out.pileup_gvcf_chunks
             .flatten()
             .ifEmpty(file("$projectDir/data/OPTIONAL_FILE"))
             .collect()
-        run_clair3_stage_1b.out.pileup_gvcf_chunks.flatten().collect()
-        run_clair3_stage_6c(
+        pileup_variants.out.pileup_gvcf_chunks.flatten().collect()
+        aggregate_full_align_variants(
             ref,
-            run_clair3_stage_6b.out.full_alignment.collect(),
-            run_clair3_stage_1a.out.contigs_file,
+            evaluate_candidates.out.full_alignment.collect(),
+            make_chunks.out.contigs_file,
             gvcfs)
 
         // merge "pileup" and "full alignment" variants, per contig
+        // note: we never create per-contig VCFs, so this process
+        //       take the whole genome VCFs and the list of contigs
+        //       to produce per-contig VCFs which are then finally
+        //       merge to yield the whole genome results.
+
+        // First merge whole-genome results from pileup and full_alignment
+        //   for each contig...
         // note: the candidate beds aren't actually used by the program for ONT
-        non_var_gvcf = run_clair3_stage_6c.out.non_var_gvcf
+        // > Step 7
+        non_var_gvcf = aggregate_full_align_variants.out.non_var_gvcf
             .ifEmpty(file("$projectDir/data/OPTIONAL_FILE"))
-        run_clair3_stage_7a(
+        merge_pileup_and_full_vars(
             contigs, ref,
-            run_clair3_stage_1c.out.pileup_vcf,
-            run_clair3_stage_6c.out.full_aln_vcf,
+            aggregate_pileup_variants.out.pileup_vcf,
+            aggregate_full_align_variants.out.full_aln_vcf,
             non_var_gvcf,
             candidate_beds.map {it->it[1] }.collect())
 
-        // merge all files across contigs
-        gvcfs = run_clair3_stage_7a.out.merged_gvcf
+        // ...then collate final per-contig VCFs for whole genome results
+        gvcfs = merge_pileup_and_full_vars.out.merged_gvcf
             .ifEmpty(file("$projectDir/data/OPTIONAL_FILE"))
-        clair_final = run_clair3_stage_7b(
+        clair_final = aggregate_all_variants(
             ref,
-            run_clair3_stage_7a.out.merged_vcf.collect(),
+            merge_pileup_and_full_vars.out.merged_vcf.collect(),
             gvcfs.collect(),
-            run_clair3_stage_1a.out.contigs_file)
+            make_chunks.out.contigs_file)
     emit:
         clair_final
 }
     
    
-workflow pipeline_with_hap {
+workflow happy_evaluation {
     take:
-        bam
-        bed
+        clair_vcf
         ref
         vcf
         vcf_bed
     main:
-        clair_vcf = pipeline(bam, bed, ref)
         hap_output = hap(clair_vcf, ref, vcf, vcf_bed)
     emit:
-        clair_output
         hap_output
-
 }
+
 
 process download_demo_files {
     label "clair3"
@@ -623,12 +606,14 @@ process download_demo_files {
     """
 }
 
+
 workflow download_demo {
     main:
         output_files = download_demo_files()
     emit:
         output_files
 }
+
 
 // entrypoint workflow
 workflow {
@@ -656,13 +641,15 @@ workflow {
         model = Channel.fromPath(params.model, type: "dir", checkIfExists: true)
  
         if (params.truth_vcf){
-            vcf = Channel.fromPath(params.truth_vcf, checkIfExists:true)
-            vcf_bed = Channel.fromPath(params.truth_bed, checkIfExists:true)
-            outputs = pipeline_with_hap(bam, bed, ref, vcf, vcf_bed)
-            output(outputs[0].concat(outputs[1]).flatten())
+            // TODO: test this
+            truth_vcf = Channel.fromPath(params.truth_vcf, checkIfExists:true)
+            truth_bed = Channel.fromPath(params.truth_bed, checkIfExists:true)
+            clair_vcf = clair3(bam, bed, ref)
+            happy_results = happy_evaluation(clair_vcf, ref, truth_vcf, truth_bed)
+            output(clair_vcf.concat(happy_results).flatten())
         } else {
-            pipeline_output = pipeline(bam, bed, ref, model)
-            output(pipeline_output)
+            clair_vcf = clair3(bam, bed, ref, model)
+            output(clair_vcf.flatten())
         }
     }
 }
