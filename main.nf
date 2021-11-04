@@ -2,49 +2,13 @@
 
 nextflow.enable.dsl = 2
 
-params.help = ""
-params.bam = ""
-params.ref = ""
-params.bed = ""
-params.threads = 4
-params.download = ""
-
-params.sample_name = "SAMPLE"
-params.vcf_fn = "EMPTY"  // used as external candidates, not plumbed in
-params.ctg_name = "EMPTY"
-params.include_all_ctgs = "False"
-params.ref_pct_full = 0.1
-params.var_pct_full = 0.7
-params.GVCF = "False"
-params.snp_min_af = 0.0
-params.indel_min_af = 0.0
-
-params.truth_vcf = ""
-params.truth_bed = ""
-
-def helpMessage(){
-    log.info """
-Workflow template'
-
-Usage:
-    nextflow run epi2melabs/wf-clair [options]
-
-Script Options:
-    --bam       FILE    Path to bam file
-    --bed       FILE    Path to bed file
-    --ref       FILE    Path to ref file
-    --model     DIR     Path to model
-    --out_dir   DIR     Output path
-"""
-}
-
 
 process make_chunks {
     // Do some preliminaries. Ordinarily this would setup a working directory
     // that all other commands would make use off, but all we need here are the
     // list of contigs and chunks.
     label "clair3"
-    cpus params.threads
+    cpus 1
     input:
         tuple path(bam), path(bai)
         tuple path(ref), path(fai)
@@ -65,7 +29,7 @@ process make_chunks {
             --chunk_num 0 \
             --chunk_size 5000000 \
             --include_all_ctgs !{params.include_all_ctgs} \
-            --threads !{params.threads}  \
+            --threads 1  \
             --qual 2 \
             --sampleName !{params.sample_name} \
             --var_pct_full !{params.var_pct_full} \
@@ -79,7 +43,9 @@ process make_chunks {
 process pileup_variants {
     // Calls variants per region ("chunk") using pileup network.
     label "clair3"
-    cpus params.threads
+    cpus 2
+    errorStrategy 'retry'
+    maxRetries params.call_retries
     input:
         each region
         tuple path(bam), path(bai)
@@ -92,8 +58,11 @@ process pileup_variants {
     script:
         // note: the VCF output here is required to use the contig
         //       name since that's parsed in the SortVcf step
+        // Set TF threads to 1, default is 4 but less than 100%
+        // observed in tests.
         """
         python \$(which clair3.py) CallVarBam \
+            --tensorflow_threads 1 \
             --chkpnt_fn ${model}/pileup \
             --bam_fn ${bam} \
             --call_fn pileup_${region.contig}_${region.chunk_id}.vcf \
@@ -118,7 +87,7 @@ process aggregate_pileup_variants {
     // from pileup network. Determines quality filter for selecting variants
     // to use for phasing.
     label "clair3"
-    cpus params.threads
+    cpus 2
     input:
         tuple path(ref), path(fai)
         // these need to be named as original, as program uses info from
@@ -150,7 +119,7 @@ process aggregate_pileup_variants {
 process select_het_snps {
     // Filters a VCF by contig, selecting only het SNPs.
     label "clair3"
-    cpus params.threads
+    cpus 2
     input:
         each contig
         tuple path("pileup.vcf.gz"), path("pileup.vcf.gz.tbi")
@@ -173,7 +142,7 @@ process phase_contig {
     // Phases a VCF using whatshap and selected het SNPS. Tags reads in the
     // input BAM.
     label "clair3"
-    cpus params.threads
+    cpus 2
     input:
         tuple val(contig), path(het_snps), path(bam), path(bai), path(ref), path(fai)
     output:
@@ -209,7 +178,7 @@ process get_qual_filter {
     // Determines quality filter for selecting candidate variants for second
     // stage "full alignment" calling.
     label "clair3"
-    cpus params.threads
+    cpus 2
     input:
         tuple path("pileup.vcf.gz"), path("pileup.vcf.gz.tbi")
     output:
@@ -234,7 +203,7 @@ process create_candidates {
     //
     // Performed per chromosome; output a list of bed files one for each chunk.
     label "clair3"
-    cpus params.threads
+    cpus 2
     input:
         each contig
         tuple path(ref), path(fai)
@@ -269,7 +238,9 @@ process create_candidates {
 process evaluate_candidates {
     // Run "full alignment" network for variants in a candidate bed file.
     label "clair3"
-    cpus params.threads
+    cpus 2
+    errorStrategy 'retry'
+    maxRetries params.call_retries
     input:
         tuple val(contig), path(phased_bam), path(phased_bam_index)
         tuple val(contig), path(candidate_bed)
@@ -284,6 +255,7 @@ process evaluate_candidates {
         mkdir output
         echo "[INFO] 6/7 Call low-quality variants using full-alignment model"
         python \$(which clair3.py) CallVarBam \
+            --tensorflow_threads 1 \
             --chkpnt_fn $model/full_alignment \
             --bam_fn $phased_bam \
             --call_fn output/full_alignment_${filename}.vcf \
@@ -304,7 +276,7 @@ process evaluate_candidates {
 process aggregate_full_align_variants {
     // Sort and merge all "full alignment" variants
     label "clair3"
-    cpus params.threads
+    cpus 2
     input:
         tuple path(ref), path(fai)
         path "full_alignment/*"
@@ -344,7 +316,7 @@ process aggregate_full_align_variants {
 process merge_pileup_and_full_vars{
     // Merge VCFs
     label "clair3"
-    cpus params.threads
+    cpus 2
     input:
         each contig
         tuple path(ref), path(fai)
@@ -379,7 +351,7 @@ process merge_pileup_and_full_vars{
 
 process aggregate_all_variants{
     label "clair3"
-    cpus params.threads
+    cpus 2
     input:
         tuple path(ref), path(fai)
         path "merge_output/*"
@@ -437,7 +409,7 @@ process hap {
         -r ref.fasta \
         -o happy \
         --engine=vcfeval \
-        --threads=${params.threads} \
+        --threads=4 \
         --pass-only
     """
 }
@@ -616,11 +588,9 @@ workflow download_demo {
 
 
 // entrypoint workflow
+WorkflowMain.initialise(workflow, params, log)
 workflow {
-    if (params.help) {
-        helpMessage()
-        exit 1
-    } else if (params.download) {
+    if (params.download_demo) {
         demo_files = download_demo()
         output(demo_files)
     } else {

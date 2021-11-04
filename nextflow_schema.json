@@ -1,0 +1,204 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema",
+    "$id": "https://raw.githubusercontent.com/./master/nextflow_schema.json",
+    "title": ". pipeline parameters",
+    "description": "",
+    "type": "object",
+    "definitions": {
+        "basic_input_output_options": {
+            "title": "Basic Input/Output Options",
+            "type": "object",
+            "fa_icon": "fas fa-terminal",
+            "description": "Define where the pipeline should find input data and save output data.",
+            "properties": {
+                "bam": {
+                    "type": "string",
+                    "description": "BAM alignment file of reads to genomic reference"
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "Reference .fasta file. A corresponding .fai file must also be present."
+                },
+                "bed": {
+                    "type": "string",
+                    "description": "A BED file describing regions to process."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Clair3 Model."
+                },
+                "out_dir": {
+                    "type": "string",
+                    "default": "output",
+                    "description": "Directory for output of all user-facing files."
+                }
+            },
+            "required": [
+                "bam",
+                "ref",
+                "bed",
+                "model"
+            ]
+        },
+        "advanced_output_options": {
+            "title": "Advanced output options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "sample_name": {
+                    "type": "string",
+                    "default": "SAMPLE",
+                    "description": "Sample name to be displayed in VCF outputs."
+                },
+                "ctg_name": {
+                    "type": "string",
+                    "default": "EMPTY",
+                    "description": "The name of the sequence to be processed"
+                },
+                "include_all_ctgs": {
+                    "type": "string",
+                    "default": "False",
+                    "description": "Call variants on all contigs, otherwise call in chr{1..22,X,Y}."
+                },
+                "GVCF": {
+                    "type": "string",
+                    "default": "False",
+                    "description": "Output a GVCF file. (Experimental)."
+                }
+            }
+        },
+        "clair3_options": {
+            "title": "Clair3 Options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "ref_pct_full": {
+                    "type": "number",
+                    "default": 0.1,
+                    "description": "Expected percentage of low quality 0/0 variants called in the pileup mode for full-alignment mode calling."
+                },
+                "var_pct_full": {
+                    "type": "number",
+                    "default": 0.7,
+                    "description": "Expected percentage of low quality 0/1 and 1/1 variants called in the pileup mode for full-alignment mode calling."
+                },
+                "snp_min_af": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Minimum SNP AF required for a candidate variant."
+                },
+                "indel_min_af": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Minimum Indel AF required for a candidate variant."
+                },
+                "vcf_fn": {
+                    "type": "string",
+                    "default": "EMPTY",
+                    "hidden": true,
+                    "description": "Candidate sites VCF file input, variants will only be called at the sites in the VCF file if provided."
+                }
+            }
+        },
+        "benchmarking_hap_py_options": {
+            "title": "Benchmarking (hap.py) Options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "truth_vcf": {
+                    "type": "string",
+                    "description": "VCF of truthset Variants."
+                },
+                "truth_bed": {
+                    "type": "string",
+                    "description": "BED file of confident truthset regions."
+                }
+            }
+        },
+        "meta_data": {
+            "title": "Meta Data",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "report_name": {
+                    "type": "string",
+                    "default": "report",
+                    "description": "Output report filename suffix."
+                }
+            }
+        },
+        "generic_options": {
+            "title": "Generic options",
+            "type": "object",
+            "fa_icon": "far fa-question-circle",
+            "description": "Less common options for the pipeline, typically set in a config file.",
+            "help_text": "These options are common to all nf-core pipelines and allow you to customise some of the core preferences for how the pipeline runs.\n\nTypically these options would be set in a Nextflow config file loaded for all pipeline runs, such as `~/.nextflow/config`.",
+            "properties": {
+                "download_demo": {
+                    "type": "boolean",
+                    "description": "Download a small demo dataset"
+                },
+                "help": {
+                    "type": "boolean",
+                    "description": "Display help text.",
+                    "fa_icon": "fas fa-question-circle",
+                    "hidden": true
+                },
+                "call_retries": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "Number of times to retry variant calling tasks on failure."
+                }
+            }
+        }
+    },
+    "allOf": [
+        {
+            "$ref": "#/definitions/basic_input_output_options"
+        },
+        {
+            "$ref": "#/definitions/advanced_output_options"
+        },
+        {
+            "$ref": "#/definitions/clair3_options"
+        },
+        {
+            "$ref": "#/definitions/benchmarking_hap_py_options"
+        },
+        {
+            "$ref": "#/definitions/meta_data"
+        },
+        {
+            "$ref": "#/definitions/generic_options"
+        }
+    ],
+    "properties": {
+        "aws_image_prefix": {
+            "type": "string",
+            "hidden": true
+        },
+        "aws_queue": {
+            "type": "string",
+            "hidden": true
+        },
+        "wfversion": {
+            "type": "string",
+            "default": "v0.3.3",
+            "hidden": true
+        },
+        "monochrome_logs": {
+            "type": "boolean"
+        },
+        "validate_params": {
+            "type": "boolean",
+            "default": true
+        },
+        "show_hidden_params": {
+            "type": "boolean"
+        }
+    }
+}
