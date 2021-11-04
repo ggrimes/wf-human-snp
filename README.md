@@ -1,9 +1,9 @@
-# Workflow template
+# Diploid small variant calling workflow
 
 This repository contains a [nextflow](https://www.nextflow.io/) workflow
-template that can be used as the basis for creating new workflows.
-
-> This workflow is not intended to be used by end users.
+performing diploid variant calling of whole genome data with
+[Clair3](https://www.github.com/HKU-BAL/Clair3) starting from read to
+reference alignments.
 
 
 ## Quickstart
@@ -26,22 +26,26 @@ For more information on running EPI2ME Labs workflows [visit out website](https:
 To obtain the workflow, having installed `nextflow`, users can run:
 
 ```
-nextflow run epi2me-labs/wf-template --help
+nextflow run epi2me-labs/wf-human-snp --help
 ```
 
-**Download demo data**
+to see the workflow options and their descriptions.
+
+**Download demonstration data**
+
+A small test dataset is provided for the purposes of testing the workflow software,
+it can be downloaded using:
 
 ```
-# download clair demo data
 OUTPUT=output
-nextflow run epi2me-labs/wf-clair \
+nextflow run epi2me-labs/wf-human-snp \
    -w {OUTPUT}/workspace/
-   --download 
+   --download_demo
 ```
 
-```
+The workflow can be run with the demonstration data using:
 
-# run the pipeline with the test data
+```
 OUTPUT=output
 nextflow run epi2me-labs/wf-clair \
     -w ${OUTPUT}/workspace \
@@ -56,13 +60,11 @@ The output of the pipeline will be found in `./output` for the above
 example. This directory contains the nextflow working directories alongside
 the 
 
-TODO: More on outputs
-
 **Workflow outputs**
 
 The primary outputs of the workflow include:
 
-* a simple text file providing a summary of sequencing reads,
+* a gzipped [VCF](https://en.wikipedia.org/wiki/Variant_Call_Format) file containing small variants found in the dataset.
 * an HTML report document detailing the primary findings of the workflow.
 
 
