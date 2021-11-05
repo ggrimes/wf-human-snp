@@ -201,7 +201,6 @@ process haplotag_phase_regions {
     label "clair3"
     cpus 1
     input:
-        // 
         tuple val(contig), path(het_snps), path(bam), path(bai), path(ref), path(fai)
         path("vcfs/*.vcf.gz")
     output:
@@ -222,6 +221,7 @@ process haplotag_phase_regions {
         samtools index -@!{task.cpus} !{contig}.bam
         """
 }
+
 
 
 process get_contig_chunks {
@@ -255,7 +255,6 @@ process get_contig_chunks {
         """
 }
 
-
 workflow sharded_phase {
     take:
         phase_inputs
@@ -268,6 +267,7 @@ workflow sharded_phase {
     emit:
         output
 }
+
 
 
 process get_qual_filter {
@@ -566,9 +566,9 @@ workflow clair3 {
             .combine(bam).combine(ref)
         // > Step 3 + Step 4
         if (params.parallel_phase) {
-            sharded_phase(phase_inputs)
-        else {
-            phase_contig(phase_inputs)
+            phase_outputs = sharded_phase(phase_inputs)
+        } else {
+           phase_outputs = phase_contig(phase_inputs)
         }
 
         // Find quality filter to select variants for "full alignment"
@@ -592,7 +592,7 @@ workflow clair3 {
                 // effectively duplicate chr for all beds - [chr, bed]
                 y.collect { [x[0], it] } }
         // produce something emitting: [[chr, bam, bai], [chr20, bed], [ref, fai], model]
-        bams_beds_and_stuff = phase_contig.out.phased_bam
+        bams_beds_and_stuff = phase_outputs.phased_bam
             .cross(candidate_beds)
             .combine(ref.map {it->[it]})
             .combine(model)
