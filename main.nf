@@ -149,7 +149,6 @@ process phase_contig {
         tuple val(contig), path("${contig}.bam"), path("${contig}.bam.bai"), emit: phased_bam
     shell:
         '''
-        echo "[INFO] 3/7 Phase VCF file using Whatshap"
         whatshap phase \
             --output phased_!{contig}.vcf.gz \
             --reference !{ref} \
@@ -171,6 +170,103 @@ process phase_contig {
 
         samtools index -@!{task.cpus} !{contig}.bam
         '''
+}
+
+
+process phase_region {
+    label "clair3"
+    cpus 1
+    input:
+        tuple val(contig), path(het_snps), path(bam), path(bai), path(ref), path(fai)
+        region
+    output:
+        tuple region, path("hets_${region}.vcf.gz"), emit: region_vcf
+    shell:
+        """
+        bcftools view -S ${het_snps} ${region} | bgzip -c > region_hets.vcf.gz
+
+        whatshap phase \
+            --output phased_!{region}.vcf.gz \
+            --reference !{ref} \
+            --chromosome !{contig} \
+            --distrust-genotypes \
+            --ignore-read-groups \
+            region_hets.vcf.gz \
+            !{bam}
+        """
+}
+
+
+process haplotag_phase_regions {
+    label "clair3"
+    cpus 1
+    input:
+        // 
+        tuple val(contig), path(het_snps), path(bam), path(bai), path(ref), path(fai)
+        path("vcfs/*.vcf.gz")
+    output:
+        tuple val(contig), path("${contig}.bam"), path("${contig}.bam.bai"), emit: phased_bam
+    shell:
+        """
+        # Run a python program to join VCFs
+
+
+        whatshap haplotag \
+            --output !{contig}.bam  \
+            --reference !{ref} \
+            --ignore-read-groups \
+            --regions !{contig} \
+            phased_!{contig}.vcf.gz \
+            !{bam}
+
+        samtools index -@!{task.cpus} !{contig}.bam
+        """
+}
+
+
+process get_contig_chunks {
+    label "clair3"
+    cpus 1
+    input:
+        val(contig)
+        val(chunk_size)
+        path("fasta_index.fai")
+    output:
+        path("regions.bed")
+    shell:
+        """
+        !#/usr/bin/env python
+
+        contig = "${contig}"
+        chunk_size = ${chunk_size}
+
+        with open("regions.bed") as out:
+            with open("fasta_index.fai") as fh:
+                for line in fh.readlines():
+                    chr, length, _ = line.split()
+                    if chr != contig:
+                        continue
+                    start = 0
+                    while start < length:
+                        end = min(start + chunk_size, length)
+                        out.write("\t".join(chr, start, end))
+                        start = end
+                    break
+        """
+}
+
+
+workflow sharded_phase {
+    take:
+        phase_inputs
+    main:
+        contig = phase_inputs[0]
+        fai = phase_inputs[5]
+        regions = get_contig_chunks(contig, params.phase_chunk, fai)
+        region_vcfs = phase_region(phase_inputs, regions)
+        output = tag_from_regions(phase_inputs, region_vcfs)
+    emit:
+        output
 }
 
 
@@ -469,7 +565,11 @@ workflow clair3 {
         phase_inputs = select_het_snps.out.het_snps_vcf
             .combine(bam).combine(ref)
         // > Step 3 + Step 4
-        phase_contig(phase_inputs)
+        if (params.parallel_phase) {
+            sharded_phase(phase_inputs)
+        else {
+            phase_contig(phase_inputs)
+        }
 
         // Find quality filter to select variants for "full alignment"
         // processing, then generate bed files containing the candidates.
