@@ -5,4 +5,5 @@ channels:
     - conda-forge
     - defaults
 dependencies:
-  - clair3==0.1.7
+    - bcftools
+    - clair3==0.1.7

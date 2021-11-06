@@ -107,10 +107,10 @@ process aggregate_pileup_variants {
             --ref_fn !{ref} \
             --contigs_fn !{contigs}
 
-        if [ "$( gzip -fdc pileup.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; \
+        if [ "$( bgzip -fdc pileup.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; \
         then echo "[INFO] Exit in pileup variant calling"; exit 1; fi
 
-        gzip -fdc pileup.vcf.gz | \
+        bgzip -fdc pileup.vcf.gz | \
             pypy $(which clair3.py) SelectQual --phase --output_fn .
         '''
 }
@@ -127,13 +127,16 @@ process select_het_snps {
         // https://github.com/HKU-BAL/Clair3/blob/329d09b39c12b6d8d9097aeb1fe9ec740b9334f6/preprocess/SelectHetSnp.py#L29
         path "split_folder/phase_qual"
     output:
-        tuple val(contig), path("split_folder/${contig}.vcf"), emit: het_snps_vcf
+        tuple val(contig), path("split_folder/${contig}.vcf.gz"), path("split_folder/${contig}.vcf.gz.tbi"), emit: het_snps_vcf
     shell:
         '''
         pypy $(which clair3.py) SelectHetSnp \
             --vcf_fn pileup.vcf.gz \
             --split_folder split_folder \
             --ctgName !{contig}
+
+        bgzip -c split_folder/!{contig}.vcf > split_folder/!{contig}.vcf.gz
+        tabix split_folder/!{contig}.vcf.gz
         '''
 }
 
@@ -144,7 +147,7 @@ process phase_contig {
     label "clair3"
     cpus 2
     input:
-        tuple val(contig), path(het_snps), path(bam), path(bai), path(ref), path(fai)
+        tuple val(contig), path(het_snps), path(het_snps_tbi), path(bam), path(bai), path(ref), path(fai)
     output:
         tuple val(contig), path("${contig}.bam"), path("${contig}.bam.bai"), emit: phased_bam
     shell:
@@ -177,14 +180,17 @@ process phase_region {
     label "clair3"
     cpus 1
     input:
-        tuple val(contig), path(het_snps), path(bam), path(bai), path(ref), path(fai)
-        region
+        tuple val(contig), path(het_snps), path(het_snps_tbi), path(bam), path(bai), path(ref), path(fai)
+        val(region)
     output:
-        tuple region, path("hets_${region}.vcf.gz"), emit: region_vcf
+        tuple val(contig), path("phased_${region.replace(':','-')}.vcf.gz"), emit: region_vcf
     shell:
         """
-        bcftools view -S ${het_snps} ${region} | bgzip -c > region_hets.vcf.gz
+        bcftools view ${het_snps} -r ${region} | bgzip -c > region_hets.vcf.gz
+        tabix region_hets.vcf.gz
 
+        # if VCF is empty, whatshap doesn't write a file
+        cp region_hets.vcf.gz phased_!{region.replace(":","-")}.vcf.gz
         whatshap phase \
             --output phased_!{region}.vcf.gz \
             --reference !{ref} \
@@ -201,14 +207,14 @@ process haplotag_phase_regions {
     label "clair3"
     cpus 1
     input:
-        tuple val(contig), path(het_snps), path(bam), path(bai), path(ref), path(fai)
-        path("vcfs/*.vcf.gz")
+        tuple val(contig), path(het_snps), path(het_snps_tbi), path(bam), path(bai), path(ref), path(fai)
+        path("vcfs/*")
     output:
         tuple val(contig), path("${contig}.bam"), path("${contig}.bam.bai"), emit: phased_bam
     shell:
         """
         # Run a python program to join VCFs
-
+        bcftools concat vcfs/* > 
 
         whatshap haplotag \
             --output !{contig}.bam  \
@@ -235,21 +241,22 @@ process get_contig_chunks {
         path("regions.bed")
     shell:
         """
-        !#/usr/bin/env python
+        #!/usr/bin/env python
 
         contig = "${contig}"
         chunk_size = ${chunk_size}
 
-        with open("regions.bed") as out:
+        with open("regions.bed", "w") as out:
             with open("fasta_index.fai") as fh:
                 for line in fh.readlines():
-                    chr, length, _ = line.split()
+                    chr, length, *_ = line.split()
+                    length = int(length)
                     if chr != contig:
                         continue
                     start = 0
                     while start < length:
                         end = min(start + chunk_size, length)
-                        out.write("\t".join(chr, start, end))
+                        out.write(f"{chr}:{start}-{end}\\n")
                         start = end
                     break
         """
@@ -259,11 +266,33 @@ workflow sharded_phase {
     take:
         phase_inputs
     main:
-        contig = phase_inputs[0]
-        fai = phase_inputs[5]
-        regions = get_contig_chunks(contig, params.phase_chunk, fai)
-        region_vcfs = phase_region(phase_inputs, regions)
-        output = tag_from_regions(phase_inputs, region_vcfs)
+        phase_outputs = phase_contig(phase_inputs)
+        phase_inputs.multiMap {
+            it ->
+                contig: it[0]
+                fai: it[6]
+        }.set { chunks }
+        res = get_contig_chunks(chunks.contig, params.phase_chunk, chunks.fai)
+        regions = res.splitText() {
+            chr = (it =~ /(.+):/)[0]
+            [chr[1], it.trim()] }
+       
+        phase_inputs.map { [it[0], it] }.dump(tag: "stuff")
+ 
+        phase_inputs
+            .map { [it[0], it] }  // add contig key
+            .cross(regions)          // duplicate inputs across regions
+            .multiMap { it -> 
+                phase_inputs: it[0][1]
+                region: it[1][1]
+            }.set { region_inputs }
+        region_inputs.phase_inputs.dump(tag: "inputs")
+        region_vcfs = phase_region(region_inputs.phase_inputs, region_inputs.region)
+        // TODO: should collect by chrom and join to phase_inputs on chrom
+        vcfs = phase_region.out.region_vcf
+            .map { it ->it[1] }
+            .collect()
+        output = haplotag_phase_regions(phase_inputs, vcfs)
     emit:
         output
 }
@@ -283,7 +312,7 @@ process get_qual_filter {
         '''
         echo "[INFO] 5/7 Select candidates for full-alignment calling"
         mkdir output
-        gzip -fdc pileup.vcf.gz | \
+        bgzip -fdc pileup.vcf.gz | \
         pypy $(which clair3.py) SelectQual \
                 --output_fn output \
                 --var_pct_full !{params.var_pct_full} \
@@ -390,7 +419,7 @@ process aggregate_full_align_variants {
             --ref_fn !{ref} \
             --contigs_fn !{contigs}
 
-        if [ "$( gzip -fdc full_alignment.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; then
+        if [ "$( bgzip -fdc full_alignment.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; then
             echo "[INFO] Exit in full-alignment variant calling"
             exit 0
         fi
@@ -465,7 +494,7 @@ process aggregate_all_variants{
             --ref_fn !{ref} \
             --contigs_fn !{contigs}
 
-        if [ "$( gzip -fdc all_contigs.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; then
+        if [ "$( bgzip -fdc all_contigs.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; then
             echo "[INFO] Exit in all contigs variant merging"
             exit 0
         fi
@@ -566,9 +595,9 @@ workflow clair3 {
             .combine(bam).combine(ref)
         // > Step 3 + Step 4
         if (params.parallel_phase) {
-            phase_outputs = sharded_phase(phase_inputs)
+            sharded_phase(phase_inputs).set { phased_bam }
         } else {
-           phase_outputs = phase_contig(phase_inputs)
+            phase_contig(phase_inputs).out.phased_bam.set { phased_bam }
         }
 
         // Find quality filter to select variants for "full alignment"
@@ -592,7 +621,7 @@ workflow clair3 {
                 // effectively duplicate chr for all beds - [chr, bed]
                 y.collect { [x[0], it] } }
         // produce something emitting: [[chr, bam, bai], [chr20, bed], [ref, fai], model]
-        bams_beds_and_stuff = phase_outputs.phased_bam
+        bams_beds_and_stuff = phased_bam
             .cross(candidate_beds)
             .combine(ref.map {it->[it]})
             .combine(model)
