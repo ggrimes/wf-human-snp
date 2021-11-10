@@ -207,14 +207,13 @@ process haplotag_phase_regions {
     label "clair3"
     cpus 1
     input:
-        tuple val(contig), path(het_snps), path(het_snps_tbi), path(bam), path(bai), path(ref), path(fai)
-        path("vcfs/*")
+        tuple val(contig), path(bam), path(bai), path(ref), path(fai), path("vcfs/*")
     output:
         tuple val(contig), path("${contig}.bam"), path("${contig}.bam.bai"), emit: phased_bam
     shell:
         """
         # Run a python program to join VCFs
-        bcftools concat vcfs/* > 
+        bcftools concat vcfs/* | bcftools sort > phased_!{contig}.vcf.gz
 
         whatshap haplotag \
             --output !{contig}.bam  \
@@ -262,11 +261,30 @@ process get_contig_chunks {
         """
 }
 
+
+workflow phase_contig_regions {
+    take:
+        phase_inputs
+        contig
+    main:
+        phase_inputs.multiMap {
+            it ->
+                contig: it[0]
+                fai: it[6]
+        }.set { chunks }
+        res = get_contig_chunks(chunks.contig, params.phase_chunk, chunks.fai)
+        regions = res.splitText() {
+        
+    emit:
+        outputs
+
+}
+
 workflow sharded_phase {
     take:
         phase_inputs
     main:
-        phase_outputs = phase_contig(phase_inputs)
+        //phase_outputs = phase_contig(phase_inputs)
         phase_inputs.multiMap {
             it ->
                 contig: it[0]
@@ -277,22 +295,27 @@ workflow sharded_phase {
             chr = (it =~ /(.+):/)[0]
             [chr[1], it.trim()] }
        
-        phase_inputs.map { [it[0], it] }.dump(tag: "stuff")
- 
+        // create inputs to phase sub-contig regions
         phase_inputs
             .map { [it[0], it] }  // add contig key
-            .cross(regions)          // duplicate inputs across regions
+            .cross(regions)       // duplicate inputs across regions
             .multiMap { it -> 
                 phase_inputs: it[0][1]
                 region: it[1][1]
             }.set { region_inputs }
-        region_inputs.phase_inputs.dump(tag: "inputs")
         region_vcfs = phase_region(region_inputs.phase_inputs, region_inputs.region)
-        // TODO: should collect by chrom and join to phase_inputs on chrom
-        vcfs = phase_region.out.region_vcf
-            .map { it ->it[1] }
-            .collect()
-        output = haplotag_phase_regions(phase_inputs, vcfs)
+        
+        // collect region VCFs by chrom and join to phase_inputs
+        vcfs_by_chrom = phase_region.out.region_vcf.groupTuple()
+        stuff = phase_inputs
+            .map { [it[0], it] }  // add join key
+            .join(vcfs_by_chrom)  // join
+            .map {                // pull out the bits we need
+                // chrom, bam, bai, ref, fai, vcfs
+                [it[0], it[1][3], it[1][4], it[1][5], it[1][6], it[2]]
+            }
+        stuff.dump(tag: "haptag-regions")
+        output = haplotag_phase_regions(stuff)
     emit:
         output
 }
