@@ -85,13 +85,13 @@
                     "description": "Expected percentage of low quality 0/1 and 1/1 variants called in the pileup mode for full-alignment mode calling."
                 },
                 "snp_min_af": {
-                    "type": "integer",
-                    "default": 0,
+                    "type": "number",
+                    "default": 0.0,
                     "description": "Minimum SNP AF required for a candidate variant."
                 },
                 "indel_min_af": {
-                    "type": "integer",
-                    "default": 0,
+                    "type": "number",
+                    "default": 0.0,
                     "description": "Minimum Indel AF required for a candidate variant."
                 },
                 "vcf_fn": {
