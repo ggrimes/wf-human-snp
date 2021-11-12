@@ -190,9 +190,8 @@ process phase_region {
         tabix region_hets.vcf.gz
 
         # if VCF is empty, whatshap doesn't write a file
-        cp region_hets.vcf.gz phased_!{region.replace(":","-")}.vcf.gz
         whatshap phase \
-            --output phased_!{region}.vcf.gz \
+            --output phased_!{region.replace(":","-")}.vcf.gz \
             --reference !{ref} \
             --chromosome !{contig} \
             --distrust-genotypes \
@@ -211,9 +210,10 @@ process haplotag_phase_regions {
     output:
         tuple val(contig), path("${contig}.bam"), path("${contig}.bam.bai"), emit: phased_bam
     shell:
-        """
+        '''
         # Run a python program to join VCFs
-        bcftools concat vcfs/* | bcftools sort > phased_!{contig}.vcf.gz
+        bcftools concat vcfs/* | bcftools sort | bgzip -c > phased_!{contig}.vcf.gz
+        tabix -f -p vcf phased_!{contig}.vcf.gz
 
         whatshap haplotag \
             --output !{contig}.bam  \
@@ -224,9 +224,8 @@ process haplotag_phase_regions {
             !{bam}
 
         samtools index -@!{task.cpus} !{contig}.bam
-        """
+        '''
 }
-
 
 
 process get_contig_chunks {
@@ -234,51 +233,47 @@ process get_contig_chunks {
     cpus 1
     input:
         val(contig)
-        val(chunk_size)
         path("fasta_index.fai")
+        val(chunk_size)
+        val(min_chunk_size)
     output:
         path("regions.bed")
     shell:
         """
         #!/usr/bin/env python
+        import math
 
         contig = "${contig}"
         chunk_size = ${chunk_size}
+        min_chunk_size = ${min_chunk_size}
+
+        def make_chunks(size):
+            # don't let last chunk become too small
+            chunks = math.ceil(size / chunk_size)
+            remain = size % chunk_size
+            if remain < min_chunk_size:
+                chunks -= 1
+            chsize = math.ceil(size / chunks)
+            start = 0
+            while start < size:
+                end = min(start + chsize, size)
+                yield start, end
+                start = end
+
+        chr_length = None
+        with open("fasta_index.fai") as fh:
+            for line in fh.readlines():
+                chr, length, *_ = line.split()
+                if chr == contig:
+                    chr_length = int(length)
+                    break
 
         with open("regions.bed", "w") as out:
-            with open("fasta_index.fai") as fh:
-                for line in fh.readlines():
-                    chr, length, *_ = line.split()
-                    length = int(length)
-                    if chr != contig:
-                        continue
-                    start = 0
-                    while start < length:
-                        end = min(start + chunk_size, length)
-                        out.write(f"{chr}:{start}-{end}\\n")
-                        start = end
-                    break
+            for start, end in make_chunks(chr_length): 
+                out.write(f"{chr}:{start}-{end}\\n")
         """
 }
 
-
-workflow phase_contig_regions {
-    take:
-        phase_inputs
-        contig
-    main:
-        phase_inputs.multiMap {
-            it ->
-                contig: it[0]
-                fai: it[6]
-        }.set { chunks }
-        res = get_contig_chunks(chunks.contig, params.phase_chunk, chunks.fai)
-        regions = res.splitText() {
-        
-    emit:
-        outputs
-
-}
 
 workflow sharded_phase {
     take:
@@ -290,7 +285,9 @@ workflow sharded_phase {
                 contig: it[0]
                 fai: it[6]
         }.set { chunks }
-        res = get_contig_chunks(chunks.contig, params.phase_chunk, chunks.fai)
+        res = get_contig_chunks(
+			chunks.contig, chunks.fai,
+			params.phase_chunk, params.phase_chunk_min)
         regions = res.splitText() {
             chr = (it =~ /(.+):/)[0]
             [chr[1], it.trim()] }
@@ -306,6 +303,8 @@ workflow sharded_phase {
         region_vcfs = phase_region(region_inputs.phase_inputs, region_inputs.region)
         
         // collect region VCFs by chrom and join to phase_inputs
+        // NOTE: groupTuple is blocking unless we know the sizes
+        //       of the groups, which we don't :(
         vcfs_by_chrom = phase_region.out.region_vcf.groupTuple()
         stuff = phase_inputs
             .map { [it[0], it] }  // add join key
@@ -314,12 +313,10 @@ workflow sharded_phase {
                 // chrom, bam, bai, ref, fai, vcfs
                 [it[0], it[1][3], it[1][4], it[1][5], it[1][6], it[2]]
             }
-        stuff.dump(tag: "haptag-regions")
         output = haplotag_phase_regions(stuff)
     emit:
         output
 }
-
 
 
 process get_qual_filter {
@@ -620,7 +617,8 @@ workflow clair3 {
         if (params.parallel_phase) {
             sharded_phase(phase_inputs).set { phased_bam }
         } else {
-            phase_contig(phase_inputs).out.phased_bam.set { phased_bam }
+            phase_contig(phase_inputs)
+            phase_contig.out.phased_bam.set { phased_bam }
         }
 
         // Find quality filter to select variants for "full alignment"
