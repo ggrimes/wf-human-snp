@@ -1,8 +1,8 @@
 ARG BASEIMAGE=ontresearch/base-workflow-image:v0.1.1
 FROM $BASEIMAGE
 ARG ENVFILE=environment.yaml
-COPY $ENVFILE $HOME/environment.yaml
 
+COPY $ENVFILE $HOME/environment.yaml
 RUN \
     . $CONDA_DIR/etc/profile.d/mamba.sh \
     && micromamba activate \
