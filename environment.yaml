@@ -5,4 +5,7 @@ channels:
     - conda-forge
     - defaults
 dependencies:
+  - aplanat
+  - pomoxis
   - clair3==0.1.7
+ 
