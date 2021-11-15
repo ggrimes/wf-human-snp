@@ -814,16 +814,16 @@ workflow clair3 {
             make_chunks.out.contigs_file)
 
         // reporting
-        //read_stats = readStats(bam)
-        //software_versions = getVersions()
-        //workflow_params = getParams()
-        //vcf_stats = vcfStats(clair_final)
-        //report = makeReport(read_stats.stats, vcf_stats[0],
-        //        software_versions.collect(), workflow_params)
+        read_stats = readStats(bam)
+        software_versions = getVersions()
+        workflow_params = getParams()
+        vcf_stats = vcfStats(clair_final)
+        report = makeReport(
+            read_stats.stats, vcf_stats[0],
+            software_versions.collect(), workflow_params)
 
     emit:
-        //clair_final.concat(report)
-        clair_final
+        clair_final.concat(report)
 }
     
    
