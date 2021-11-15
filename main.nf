@@ -293,6 +293,10 @@ workflow sharded_phase {
         regions = res.splitText() {
             chr = (it =~ /(.+):/)[0]
             [chr[1], it.trim()] }
+        // make an auxiliary channel counting the number of regions per-chromosome
+        reg_counts = regions
+            .groupTuple()
+            .map {chr, regs -> tuple(chr, groupKey(chr, regs.size())) }
        
         // create inputs to phase sub-contig regions
         phase_inputs
@@ -305,9 +309,15 @@ workflow sharded_phase {
         region_vcfs = phase_region(region_inputs.phase_inputs, region_inputs.region)
         
         // collect region VCFs by chrom and join to phase_inputs
-        // NOTE: groupTuple is blocking unless we know the sizes
-        //       of the groups, which we don't :(
-        vcfs_by_chrom = phase_region.out.region_vcf.groupTuple()
+        // we first join on chr, and then group by the groupKey
+        // with knowledge of the sizes so big onward tasks for
+        // different chroms don't wait for all region_vcf tasks.
+        reg_counts
+            .cross(phase_region.out.region_vcf)  // cross is performed using chr
+            .map { i, j -> [i[1], i[0], j[1]] }  // i[1] is *chr
+            .groupTuple()                        // uses *chr as key
+            .map { i, j, k -> [j[0], k]}         // dispense with *chr, only need one chr!
+            .set { vcfs_by_chrom }
         stuff = phase_inputs
             .map { [it[0], it] }  // add join key
             .join(vcfs_by_chrom)  // join
@@ -472,7 +482,7 @@ process merge_pileup_and_full_vars{
         path "non_var.gvcf"
         path "candidate_beds/*"
     output:
-        path "output/merge_${contig}.vcf", emit: merged_vcf
+        tuple val(contig), path("output/merge_${contig}.vcf.gz"), path("output/merge_${contig}.vcf.gz.tbi"), emit: merged_vcf
         path "output/merge_${contig}.gvcf", optional: true, emit: merged_gvcf
     shell:
         '''
@@ -492,25 +502,36 @@ process merge_pileup_and_full_vars{
             --non_var_gvcf_fn non_var.gvcf \
             --ref_fn !{ref} \
             --ctgName !{contig}
+
+        bgzip -c output/merge_!{contig}.vcf > output/merge_!{contig}.vcf.gz
+        tabix output/merge_!{contig}.vcf.gz
         '''
 }
 
 
 process aggregate_all_variants{
     label "clair3"
-    cpus 2
+    cpus 4
     input:
         tuple path(ref), path(fai)
         path "merge_output/*"
         path "merge_outputs_gvcf/*"
+        val(phase_vcf)
         path contigs
     output:
         tuple path("all_contigs.vcf.gz"), path("all_contigs.vcf.gz.tbi"), emit: final_vcf
     shell:
         '''
+        prefix="merge"
+        phase_vcf=!{params.phase_vcf}
+        if [[ $phase_vcf == "true" ]]; then
+            prefix="phased"
+        fi
+        ls merge_output/*.vcf.gz | parallel --jobs 4 "bgzip -d {}"
+
         pypy $(which clair3.py) SortVcf \
             --input_dir merge_output \
-            --vcf_fn_prefix merge \
+            --vcf_fn_prefix $prefix \
             --output_fn all_contigs.vcf \
             --sampleName !{params.sample_name} \
             --ref_fn !{ref} \
@@ -769,23 +790,40 @@ workflow clair3 {
             non_var_gvcf,
             candidate_beds.map {it->it[1] }.collect())
 
+        if (params.phase_vcf) {
+            data = merge_pileup_and_full_vars.out.merged_vcf
+                .combine(bam).combine(ref).view()
+            chrom = data.map { it -> it[0] }
+            phase_region(data, chrom)
+                .map { it -> [it[1]] }
+                .set { final_vcfs }
+        } else {
+            merge_pileup_and_full_vars.out.merged_vcf
+                .map { it -> [it[1]] }
+                .set { final_vcfs }
+        }
+
         // ...then collate final per-contig VCFs for whole genome results
         gvcfs = merge_pileup_and_full_vars.out.merged_gvcf
             .ifEmpty(file("$projectDir/data/OPTIONAL_FILE"))
         clair_final = aggregate_all_variants(
             ref,
-            merge_pileup_and_full_vars.out.merged_vcf.collect(),
+            final_vcfs.collect(),
             gvcfs.collect(),
+            params.phase_vcf,
             make_chunks.out.contigs_file)
-        read_stats = readStats(bam)
-        software_versions = getVersions()
-        workflow_params = getParams()
-        vcf_stats = vcfStats(clair_final)
-        report = makeReport(read_stats.stats, vcf_stats[0],
-                software_versions.collect(), workflow_params)
+
+        // reporting
+        //read_stats = readStats(bam)
+        //software_versions = getVersions()
+        //workflow_params = getParams()
+        //vcf_stats = vcfStats(clair_final)
+        //report = makeReport(read_stats.stats, vcf_stats[0],
+        //        software_versions.collect(), workflow_params)
 
     emit:
-        clair_final.concat(report)
+        //clair_final.concat(report)
+        clair_final
 }
     
    

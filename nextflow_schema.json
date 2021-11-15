@@ -100,8 +100,14 @@
                     "hidden": true,
                     "description": "Candidate sites VCF file input, variants will only be called at the sites in the VCF file if provided."
                 },
+                "phase_vcf": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Phase output VCF."
+               },
                 "parallel_phase": {
                     "type": "boolean",
+                    "default": false,
                     "description": "Run intermediate phasing in parallel chunks."
                 },
                 "phase_chunk": {
