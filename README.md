@@ -37,10 +37,9 @@ A small test dataset is provided for the purposes of testing the workflow softwa
 it can be downloaded using:
 
 ```
-OUTPUT=output
-nextflow run epi2me-labs/wf-human-snp \
-   -w {OUTPUT}/workspace/
-   --download_demo
+wget -O demo_data.tar.gz \
+    https://ont-exd-int-s3-euwst1-epi2me-labs.s3.amazonaws.com/wf-human-snp/demo_data.tar.gz
+tar -xzvf demo_data.tar.gz
 ```
 
 The workflow can be run with the demonstration data using:
@@ -50,9 +49,9 @@ OUTPUT=output
 nextflow run epi2me-labs/wf-clair \
     -w ${OUTPUT}/workspace \
     -profile standard \
-    --bam ${OUTPUT}/demo_data/HG003_chr20_demo.bam \
-    --bed ${OUTPUT}/demo_data/quick_demo.bed \
-    --ref ${OUTPUT}/demo_data/GRCh38_no_alt_chr20.fa \
+    --bam demo_data/chr6_chr20.bam \
+    --bed demo_data/chr6_chr20.bed \
+    --ref demo_data/chr6_chr20.fasta \
     --out_dir ${OUTPUT}
 ```
 
