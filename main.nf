@@ -2,6 +2,8 @@
 
 nextflow.enable.dsl = 2
 
+import groovy.json.JsonBuilder
+
 
 process make_chunks {
     // Do some preliminaries. Ordinarily this would setup a working directory
@@ -577,6 +579,81 @@ process output {
 }
 
 
+process readStats {
+    label "clair3"
+    cpus 1
+    input:
+        tuple path("alignments.bam"), path("alignments.bam.bai")
+    output:
+        path "readstats.txt", emit: stats
+        path "mapsummary.txt", emit: summary
+    """
+    stats_from_bam -s mapsummary.txt -o readstats.txt alignments.bam
+    """
+}
+
+
+process getVersions {
+    label "clair3"
+    cpus 1
+    output:
+        path "versions.txt"
+    //aplanat --version | sed 's/^/aplanat,/' >> versions.txt
+    script:
+    """
+    run_clair3.sh --version | sed 's/ /,/' >> versions.txt
+
+    """
+}
+
+process getParams {
+    label "clair3"
+    cpus 1
+    output:
+        path "params.json"
+    script:
+        def paramsJSON = new JsonBuilder(params).toPrettyString()
+    """
+    # Output nextflow params object to JSON
+    echo '$paramsJSON' > params.json
+    """
+}
+
+
+process vcfStats {
+    label "clair3"
+    cpus 1
+    input:
+        tuple path(vcf), path(index)
+    output:
+        file "variants.stats"
+    """
+    bcftools stats $vcf > variants.stats
+    """
+}
+
+
+process makeReport {
+    label "clair3"
+    input:
+        file read_summary
+        file vcfstats
+        path versions
+        path "params.json"
+    output:
+        path "wf-template-*.html"
+    script:
+        // report naming
+        report_name = "wf-template-" + params.report_name + '.html'
+    """
+    report.py $report_name --versions $versions --params params.json \
+    --read_stats $read_summary \
+    --vcf_stats $vcfstats
+    """
+}
+
+
+
 // workflow module
 workflow clair3 {
     take:
@@ -585,6 +662,7 @@ workflow clair3 {
         ref
         model
     main:
+
         // Run preliminaries to find contigs and generate regions to process in
         // parallel.
         // > Step 0
@@ -594,7 +672,7 @@ workflow clair3 {
                 cols = (it =~ /(.+)\s(.+)\s(.+)/)[0]
                 ["contig": cols[1], "chunk_id":cols[2], "total_chunks":cols[3]]}
         contigs = make_chunks.out.contigs_file.splitText() { it.trim() }
-
+        
         // Run the "pileup" caller on all chunks and collate results
         // > Step 1 
         pileup_variants(chunks, bam, ref, model)
@@ -699,8 +777,15 @@ workflow clair3 {
             merge_pileup_and_full_vars.out.merged_vcf.collect(),
             gvcfs.collect(),
             make_chunks.out.contigs_file)
+        read_stats = readStats(bam)
+        software_versions = getVersions()
+        workflow_params = getParams()
+        vcf_stats = vcfStats(clair_final)
+        report = makeReport(read_stats.stats, vcf_stats[0],
+                software_versions.collect(), workflow_params)
+
     emit:
-        clair_final
+        clair_final.concat(report)
 }
     
    
