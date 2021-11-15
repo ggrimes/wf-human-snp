@@ -840,59 +840,34 @@ workflow happy_evaluation {
 }
 
 
-process download_demo_files {
-    label "clair3"
-    output:
-        path "demo_data"
-    """
-    mkdir demo_data
-    wget -O demo_data.tar.gz  https://ont-exd-int-s3-euwst1-epi2me-labs.s3.amazonaws.com/clair_tutorial/demo_data.tar.gz
-    tar -xzvf demo_data.tar.gz -C demo_data
-    """
-}
-
-
-workflow download_demo {
-    main:
-        output_files = download_demo_files()
-    emit:
-        output_files
-}
-
-
 // entrypoint workflow
 WorkflowMain.initialise(workflow, params, log)
 workflow {
-    if (params.download_demo) {
-        demo_files = download_demo()
-        output(demo_files)
+    // TODO: why do we need a fai? is this a race condition on
+    //       on multiple processes trying to create it?
+    //       We should likely use https://www.nextflow.io/docs/latest/process.html#storedir
+    //       for these things
+    ref = Channel.fromPath(params.ref, checkIfExists: true)
+    fai = Channel.fromPath(params.ref + ".fai", checkIfExists: true)
+    ref = ref.concat(fai).buffer(size: 2)
+
+    bam = Channel.fromPath(params.bam, checkIfExists: true)
+    bai = Channel.fromPath(params.bam + ".bai", checkIfExists: true)
+    bam = bam.concat(bai).buffer(size: 2)
+
+    // TODO: do we really need a bed? Whats it used for?
+    bed = Channel.fromPath(params.bed, checkIfExists: true)
+    model = Channel.fromPath(params.model, type: "dir", checkIfExists: true)
+
+    if (params.truth_vcf){
+        // TODO: test this
+        truth_vcf = Channel.fromPath(params.truth_vcf, checkIfExists:true)
+        truth_bed = Channel.fromPath(params.truth_bed, checkIfExists:true)
+        clair_vcf = clair3(bam, bed, ref)
+        happy_results = happy_evaluation(clair_vcf, ref, truth_vcf, truth_bed)
+        output(clair_vcf.concat(happy_results).flatten())
     } else {
-        // TODO: why do we need a fai? is this a race condition on
-        //       on multiple processes trying to create it?
-        //       We should likely use https://www.nextflow.io/docs/latest/process.html#storedir
-        //       for these things
-        ref = Channel.fromPath(params.ref, checkIfExists: true)
-        fai = Channel.fromPath(params.ref + ".fai", checkIfExists: true)
-        ref = ref.concat(fai).buffer(size: 2)
-
-        bam = Channel.fromPath(params.bam, checkIfExists: true)
-        bai = Channel.fromPath(params.bam + ".bai", checkIfExists: true)
-        bam = bam.concat(bai).buffer(size: 2)
-
-        // TODO: do we really need a bed? Whats it used for?
-        bed = Channel.fromPath(params.bed, checkIfExists: true)
-        model = Channel.fromPath(params.model, type: "dir", checkIfExists: true)
- 
-        if (params.truth_vcf){
-            // TODO: test this
-            truth_vcf = Channel.fromPath(params.truth_vcf, checkIfExists:true)
-            truth_bed = Channel.fromPath(params.truth_bed, checkIfExists:true)
-            clair_vcf = clair3(bam, bed, ref)
-            happy_results = happy_evaluation(clair_vcf, ref, truth_vcf, truth_bed)
-            output(clair_vcf.concat(happy_results).flatten())
-        } else {
-            clair_vcf = clair3(bam, bed, ref, model)
-            output(clair_vcf.flatten())
-        }
+        clair_vcf = clair3(bam, bed, ref, model)
+        output(clair_vcf.flatten())
     }
 }
