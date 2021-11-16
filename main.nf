@@ -662,10 +662,10 @@ process makeReport {
         path versions
         path "params.json"
     output:
-        path "wf-template-*.html"
+        path "wf-human-snp-*.html"
     script:
         // report naming
-        report_name = "wf-template-" + params.report_name + '.html'
+        report_name = "wf-human-snp-" + params.report_name + '.html'
     """
     report.py $report_name --versions $versions --params params.json \
     --read_stats $read_summary \
