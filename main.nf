@@ -18,27 +18,28 @@ process make_chunks {
     output:
         path "clair_output/tmp/CONTIGS", emit: contigs_file
         path "clair_output/tmp/CHUNK_LIST", emit: chunks_file
-    shell:
-        '''
+    script:
+        def bedargs = bed.name != 'OPTIONAL_FILE' ? "--bed_fn ${bed}" : ''
+        """
         mkdir -p clair_output
-        python $(which clair3.py) CheckEnvs \
-            --bam_fn !{bam} \
-            --bed_fn !{bed} \
+        python \$(which clair3.py) CheckEnvs \
+            --bam_fn ${bam} \
+            ${bedargs} \
             --output_fn_prefix clair_output \
-            --ref_fn !{ref} \
-            --vcf_fn !{params.vcf_fn} \
-            --ctg_name !{params.ctg_name} \
+            --ref_fn ${ref} \
+            --vcf_fn ${params.vcf_fn} \
+            --ctg_name ${params.ctg_name} \
             --chunk_num 0 \
             --chunk_size 5000000 \
-            --include_all_ctgs !{params.include_all_ctgs} \
+            --include_all_ctgs ${params.include_all_ctgs} \
             --threads 1  \
             --qual 2 \
-            --sampleName !{params.sample_name} \
-            --var_pct_full !{params.var_pct_full} \
-            --ref_pct_full !{params.ref_pct_full} \
-            --snp_min_af !{params.snp_min_af} \
-            --indel_min_af !{params.indel_min_af}
-        '''
+            --sampleName ${params.sample_name} \
+            --var_pct_full ${params.var_pct_full} \
+            --ref_pct_full ${params.ref_pct_full} \
+            --snp_min_af ${params.snp_min_af} \
+            --indel_min_af ${params.indel_min_af}
+        """
 }
 
 
@@ -57,30 +58,30 @@ process pileup_variants {
         // TODO: make this explicit, why is pileup VCF optional?
         path "pileup_*.vcf", optional: true, emit: pileup_vcf_chunks
         path "gvcf_tmp_path/*", optional: true, emit: pileup_gvcf_chunks
-    script:
+    shell:
         // note: the VCF output here is required to use the contig
         //       name since that's parsed in the SortVcf step
         // Set TF threads to 1, default is 4 but less than 100%
         // observed in tests.
-        """
-        python \$(which clair3.py) CallVarBam \
+        '''
+        python $(which clair3.py) CallVarBam \
             --tensorflow_threads 1 \
-            --chkpnt_fn ${model}/pileup \
-            --bam_fn ${bam} \
-            --call_fn pileup_${region.contig}_${region.chunk_id}.vcf \
-            --ref_fn ${ref} \
-            --ctgName ${region.contig} \
-            --chunk_id ${region.chunk_id} \
-            --chunk_num ${region.total_chunks} \
+            --chkpnt_fn !{model}/pileup \
+            --bam_fn !{bam} \
+            --call_fn pileup_!{region.contig}_!{region.chunk_id}.vcf \
+            --ref_fn !{ref} \
+            --ctgName !{region.contig} \
+            --chunk_id !{region.chunk_id} \
+            --chunk_num !{region.total_chunks} \
             --platform ont \
             --fast_mode False \
-            --snp_min_af ${params.snp_min_af} \
-            --indel_min_af ${params.indel_min_af} \
+            --snp_min_af !{params.snp_min_af} \
+            --indel_min_af !{params.indel_min_af} \
             --call_snp_only False \
-            --gvcf ${params.GVCF} \
+            --gvcf !{params.GVCF} \
             --temp_file_dir gvcf_tmp_path \
             --pileup
-        """ 
+        ''' 
 }
 
 
@@ -187,8 +188,8 @@ process phase_region {
     output:
         tuple val(contig), path("phased_${region.replace(':','-')}.vcf.gz"), emit: region_vcf
     shell:
-        """
-        bcftools view ${het_snps} -r ${region} | bgzip -c > region_hets.vcf.gz
+        '''
+        bcftools view !{het_snps} -r !{region} | bgzip -c > region_hets.vcf.gz
         tabix region_hets.vcf.gz
 
         # if VCF is empty, whatshap doesn't write a file
@@ -200,7 +201,7 @@ process phase_region {
             --ignore-read-groups \
             region_hets.vcf.gz \
             !{bam}
-        """
+        '''
 }
 
 
@@ -241,13 +242,13 @@ process get_contig_chunks {
     output:
         path("regions.bed")
     shell:
-        """
+        '''
         #!/usr/bin/env python
         import math
 
-        contig = "${contig}"
-        chunk_size = ${chunk_size}
-        min_chunk_size = ${min_chunk_size}
+        contig = "!{contig}"
+        chunk_size = !{chunk_size}
+        min_chunk_size = !{min_chunk_size}
 
         def make_chunks(size):
             # don't let last chunk become too small
@@ -273,7 +274,7 @@ process get_contig_chunks {
         with open("regions.bed", "w") as out:
             for start, end in make_chunks(chr_length): 
                 out.write(f"{chr}:{start}-{end}\\n")
-        """
+        '''
 }
 
 
@@ -406,8 +407,7 @@ process evaluate_candidates {
     output:
         path "output/full_alignment_*.vcf", emit: full_alignment
     script:
-        // TODO: clean this up. 
-        filename = file(candidate_bed).getName()
+        filename = candidate_bed.name
         """
         mkdir output
         echo "[INFO] 6/7 Call low-quality variants using full-alignment model"
@@ -568,18 +568,19 @@ process hap {
         path "truth.bed"
     output:
         path "happy"
-    """
-    mkdir happy
-    /opt/hap.py/bin/hap.py \
-        truth.vcf \
-        clair.vcf.gz \
-        -f truth.bed \
-        -r ref.fasta \
-        -o happy \
-        --engine=vcfeval \
-        --threads=4 \
-        --pass-only
-    """
+    shell:
+        '''
+        mkdir happy
+        /opt/hap.py/bin/hap.py \
+            truth.vcf \
+            clair.vcf.gz \
+            -f truth.bed \
+            -r ref.fasta \
+            -o happy \
+            --engine=vcfeval \
+            --threads=4 \
+            --pass-only
+        '''
 }
 
 
@@ -607,9 +608,9 @@ process readStats {
         tuple path("alignments.bam"), path("alignments.bam.bai")
     output:
         path "readstats.txt", emit: stats
-        path "mapsummary.txt", emit: summary
     """
-    stats_from_bam -s mapsummary.txt -o readstats.txt alignments.bam
+    # using multithreading inside docker container does strange things
+    bamstats --threads 1 alignments.bam > readstats.txt
     """
 }
 
@@ -619,12 +620,10 @@ process getVersions {
     cpus 1
     output:
         path "versions.txt"
-    //aplanat --version | sed 's/^/aplanat,/' >> versions.txt
     script:
-    """
-    run_clair3.sh --version | sed 's/ /,/' >> versions.txt
-
-    """
+        """
+        run_clair3.sh --version | sed 's/ /,/' >> versions.txt
+        """
 }
 
 process getParams {
@@ -634,10 +633,10 @@ process getParams {
         path "params.json"
     script:
         def paramsJSON = new JsonBuilder(params).toPrettyString()
-    """
-    # Output nextflow params object to JSON
-    echo '$paramsJSON' > params.json
-    """
+        """
+        # Output nextflow params object to JSON
+        echo '$paramsJSON' > params.json
+        """
 }
 
 
@@ -664,13 +663,12 @@ process makeReport {
     output:
         path "wf-human-snp-*.html"
     script:
-        // report naming
         report_name = "wf-human-snp-" + params.report_name + '.html'
-    """
-    report.py $report_name --versions $versions --params params.json \
-    --read_stats $read_summary \
-    --vcf_stats $vcfstats
-    """
+        """
+        report.py $report_name --versions $versions --params params.json \
+        --read_stats $read_summary \
+        --vcf_stats $vcfstats
+        """
 }
 
 
@@ -855,8 +853,11 @@ workflow {
     bai = Channel.fromPath(params.bam + ".bai", checkIfExists: true)
     bam = bam.concat(bai).buffer(size: 2)
 
-    // TODO: do we really need a bed? Whats it used for?
-    bed = Channel.fromPath(params.bed, checkIfExists: true)
+    if(params.bed == null) {
+        bed = Channel.fromPath("${projectDir}/data/OPTIONAL_FILE", checkIfExists: true)
+    } else {
+        bed = Channel.fromPath(params.bed, checkIfExists: true)
+    }
     model = Channel.fromPath(params.model, type: "dir", checkIfExists: true)
 
     if (params.truth_vcf){
