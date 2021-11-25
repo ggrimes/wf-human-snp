@@ -7,5 +7,5 @@ channels:
 dependencies:
     - aplanat
     - bcftools
-    - clair3==0.1.7
-    - pomoxis
+    - clair3==0.1.8
+    - fastcat>=0.4.8
