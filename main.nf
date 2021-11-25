@@ -845,25 +845,25 @@ workflow {
     //       on multiple processes trying to create it?
     //       We should likely use https://www.nextflow.io/docs/latest/process.html#storedir
     //       for these things
-    ref = Channel.fromPath(params.ref, checkIfExists: true)
-    fai = Channel.fromPath(params.ref + ".fai", checkIfExists: true)
+    ref = Channel.fromPath(params.ref)
+    fai = Channel.fromPath(params.ref + ".fai")
     ref = ref.concat(fai).buffer(size: 2)
 
-    bam = Channel.fromPath(params.bam, checkIfExists: true)
-    bai = Channel.fromPath(params.bam + ".bai", checkIfExists: true)
+    bam = Channel.fromPath(params.bam)
+    bai = Channel.fromPath(params.bam + ".bai")
     bam = bam.concat(bai).buffer(size: 2)
 
     if(params.bed == null) {
-        bed = Channel.fromPath("${projectDir}/data/OPTIONAL_FILE", checkIfExists: true)
+        bed = Channel.fromPath("${projectDir}/data/OPTIONAL_FILE")
     } else {
-        bed = Channel.fromPath(params.bed, checkIfExists: true)
+        bed = Channel.fromPath(params.bed)
     }
-    model = Channel.fromPath(params.model, type: "dir", checkIfExists: true)
+    model = Channel.fromPath(params.model, type: "dir")
 
     if (params.truth_vcf){
         // TODO: test this
-        truth_vcf = Channel.fromPath(params.truth_vcf, checkIfExists:true)
-        truth_bed = Channel.fromPath(params.truth_bed, checkIfExists:true)
+        truth_vcf = Channel.fromPath(params.truth_vcf)
+        truth_bed = Channel.fromPath(params.truth_bed)
         clair_vcf = clair3(bam, bed, ref)
         happy_results = happy_evaluation(clair_vcf, ref, truth_vcf, truth_bed)
         output(clair_vcf.concat(happy_results).flatten())
