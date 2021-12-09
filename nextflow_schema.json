@@ -1,8 +1,9 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema",
     "$id": "https://raw.githubusercontent.com/./master/nextflow_schema.json",
-    "title": ". pipeline parameters",
-    "description": "",
+    "title": "epi2me-labs/wf-human-snp",
+    "description": "Small variant calling for human samples.",
+    "url": "https://github.com/epi2me-labs/wf-human-snp",
     "type": "object",
     "definitions": {
         "basic_input_output_options": {
@@ -13,14 +14,17 @@
             "properties": {
                 "bam": {
                     "type": "string",
+                    "format": "file-path",
                     "description": "BAM alignment file of reads to genomic reference"
                 },
                 "ref": {
                     "type": "string",
+                    "format": "file-path",
                     "description": "Reference .fasta file. A corresponding .fai file must also be present."
                 },
                 "bed": {
                     "type": "string",
+                    "format": "file-path",
                     "description": "A BED file describing regions to process."
                 },
                 "model": {
