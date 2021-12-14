@@ -4,6 +4,8 @@ nextflow.enable.dsl = 2
 
 import groovy.json.JsonBuilder
 
+include { start_ping; end_ping } from './lib/ping'
+
 
 process make_chunks {
     // Do some preliminaries. Ordinarily this would setup a working directory
@@ -819,9 +821,11 @@ workflow clair3 {
         report = makeReport(
             read_stats.stats, vcf_stats[0],
             software_versions.collect(), workflow_params)
+        telemetry = workflow_params
 
     emit:
         clair_final.concat(report)
+        telemetry
 }
     
    
@@ -839,8 +843,10 @@ workflow happy_evaluation {
 
 
 // entrypoint workflow
+// entrypoint workflow
 WorkflowMain.initialise(workflow, params, log)
 workflow {
+    start_ping()
     // TODO: why do we need a fai? is this a race condition on
     //       on multiple processes trying to create it?
     //       We should likely use https://www.nextflow.io/docs/latest/process.html#storedir
@@ -866,9 +872,11 @@ workflow {
         truth_bed = Channel.fromPath(params.truth_bed, checkIfExists:true)
         clair_vcf = clair3(bam, bed, ref)
         happy_results = happy_evaluation(clair_vcf, ref, truth_vcf, truth_bed)
-        output(clair_vcf.concat(happy_results).flatten())
+        output(clair_vcf[0].concat(happy_results).flatten())
     } else {
         clair_vcf = clair3(bam, bed, ref, model)
-        output(clair_vcf.flatten())
+        output(clair_vcf[0].flatten())
     }
+    end_ping(clair3.out.telemetry)
+
 }
