@@ -147,7 +147,13 @@
                     "type": "string",
                     "default": "report",
                     "description": "Output report filename suffix."
+                },
+                "disable_ping": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable to prevent sending a workflow ping."
                 }
+
             }
         },
         "generic_options": {

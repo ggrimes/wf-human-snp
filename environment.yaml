@@ -9,3 +9,4 @@ dependencies:
     - bcftools
     - clair3==0.1.8
     - fastcat>=0.4.8
+    - epi2melabs
