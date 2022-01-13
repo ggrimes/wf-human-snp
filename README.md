@@ -46,7 +46,7 @@ The workflow can be run with the demonstration data using:
 
 ```
 OUTPUT=output
-nextflow run epi2me-labs/wf-clair \
+nextflow run epi2me-labs/wf-human-snp \
     -w ${OUTPUT}/workspace \
     -profile standard \
     --bam demo_data/chr6_chr20.bam \
