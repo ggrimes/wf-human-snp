@@ -157,14 +157,24 @@ process phase_contig {
         tuple val(contig), path("${contig}_hp.bam"), path("${contig}_hp.bam.bai"), emit: phased_bam
     shell:
         '''
-        whatshap phase \
-            --output phased_!{contig}.vcf.gz \
-            --reference !{ref} \
-            --chromosome !{contig} \
-            --distrust-genotypes \
-            --ignore-read-groups \
-            !{het_snps} \
-            !{bam}
+        if [[ "!{params.use_longphase}" == "true" ]]; then
+            echo "Using longphase for phasing"
+            # longphase needs decompressed 
+            gzip -dc !{het_snps} > snps.vcf
+            longphase phase --ont -o phased_!{contig} \
+                -s snps.vcf -b !{bam} -r !{ref} -t !{task.cpus}
+            bgzip phased_!{contig}.vcf
+        else
+            echo "Using whatshap for phasing"
+            whatshap phase \
+                --output phased_!{contig}.vcf.gz \
+                --reference !{ref} \
+                --chromosome !{contig} \
+                --distrust-genotypes \
+                --ignore-read-groups \
+                !{het_snps} \
+                !{bam}
+        fi
 
         tabix -f -p vcf phased_!{contig}.vcf.gz
 
