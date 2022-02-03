@@ -122,6 +122,11 @@
                     "type": "integer",
                     "default": 10000000,
                     "description": "Minimum allowed phasing chunk size."
+                },
+                "use_longphase": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use longphase for intermediate phasing. Cannot be combined with `--parallel_phase` (experimental)."
                 }
             }
         },
