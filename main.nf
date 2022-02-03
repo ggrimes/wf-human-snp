@@ -150,11 +150,11 @@ process phase_contig {
     // Phases a VCF using whatshap and selected het SNPS. Tags reads in the
     // input BAM.
     label "clair3"
-    cpus 2
+    cpus 4
     input:
         tuple val(contig), path(het_snps), path(het_snps_tbi), path(bam), path(bai), path(ref), path(fai)
     output:
-        tuple val(contig), path("${contig}.bam"), path("${contig}.bam.bai"), emit: phased_bam
+        tuple val(contig), path("${contig}_hp.bam"), path("${contig}_hp.bam.bai"), emit: phased_bam
     shell:
         '''
         whatshap phase \
@@ -169,14 +169,15 @@ process phase_contig {
         tabix -f -p vcf phased_!{contig}.vcf.gz
 
         whatshap haplotag \
-            --output !{contig}.bam  \
             --reference !{ref} \
             --ignore-read-groups \
             --regions !{contig} \
             phased_!{contig}.vcf.gz \
-            !{bam}
+            !{bam} \
+        | samtools view -b -1 -@3 -o !{contig}_hp.bam
 
-        samtools index -@!{task.cpus} !{contig}.bam
+        # --write-index produces .csi not .bai, which downstream things seem not to like
+        samtools index -@!{task.cpus} !{contig}_hp.bam
         '''
 }
 
@@ -209,11 +210,11 @@ process phase_region {
 
 process haplotag_phase_regions {
     label "clair3"
-    cpus 1
+    cpus 4
     input:
         tuple val(contig), path(bam), path(bai), path(ref), path(fai), path("vcfs/*")
     output:
-        tuple val(contig), path("${contig}.bam"), path("${contig}.bam.bai"), emit: phased_bam
+        tuple val(contig), path("${contig}_hp.bam"), path("${contig}_hp.bam.bai"), emit: phased_bam
     shell:
         '''
         # Run a python program to join VCFs
@@ -221,14 +222,15 @@ process haplotag_phase_regions {
         tabix -f -p vcf phased_!{contig}.vcf.gz
 
         whatshap haplotag \
-            --output !{contig}.bam  \
             --reference !{ref} \
             --ignore-read-groups \
             --regions !{contig} \
             phased_!{contig}.vcf.gz \
-            !{bam}
+            !{bam} \
+        | samtools view -b -1 -@3 -o !{contig}_hp.bam
 
-        samtools index -@!{task.cpus} !{contig}.bam
+        # --write-index produces .csi not .bai, which downstream things seem not to like
+        samtools index -@!{task.cpus} !{contig}_hp.bam
         '''
 }
 
@@ -842,7 +844,6 @@ workflow happy_evaluation {
 }
 
 
-// entrypoint workflow
 // entrypoint workflow
 WorkflowMain.initialise(workflow, params, log)
 workflow {
