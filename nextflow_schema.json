@@ -108,6 +108,11 @@
                     "default": false,
                     "description": "Phase output VCF."
                },
+                "use_longphase": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use longphase for final phasing of output variants. (experimental)."
+                },
                 "parallel_phase": {
                     "type": "boolean",
                     "default": false,
@@ -123,7 +128,7 @@
                     "default": 10000000,
                     "description": "Minimum allowed phasing chunk size."
                 },
-                "use_longphase": {
+                "use_longphase_intermediate": {
                     "type": "boolean",
                     "default": false,
                     "description": "Use longphase for intermediate phasing. Cannot be combined with `--parallel_phase` (experimental)."
@@ -217,7 +222,7 @@
         },
         "wfversion": {
             "type": "string",
-            "default": "v0.2.0",
+            "default": "v0.2.1",
             "hidden": true
         },
         "monochrome_logs": {

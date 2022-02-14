@@ -112,10 +112,11 @@ process aggregate_pileup_variants {
             --ref_fn !{ref} \
             --contigs_fn !{contigs}
 
-        if [ "$( bgzip -fdc pileup.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; \
+        # TODO: this is a little silly: it can take a non-trivial amount of time
+        if [ "$( bgzip -@ !{task.cpus} -fdc pileup.vcf.gz | grep -v '#' | wc -l )" -eq 0 ]; \
         then echo "[INFO] Exit in pileup variant calling"; exit 1; fi
 
-        bgzip -fdc pileup.vcf.gz | \
+        bgzip -@ !{task.cpus} -fdc pileup.vcf.gz | \
             pypy $(which clair3.py) SelectQual --phase --output_fn .
         '''
 }
@@ -146,9 +147,8 @@ process select_het_snps {
 }
 
 
-process phase_contig {
-    // Phases a VCF using whatshap and selected het SNPS. Tags reads in the
-    // input BAM.
+process haplotag_contig {
+    // Tags reads in an input BAM from heterozygous SNPs
     label "clair3"
     cpus 4
     input:
@@ -157,10 +157,10 @@ process phase_contig {
         tuple val(contig), path("${contig}_hp.bam"), path("${contig}_hp.bam.bai"), emit: phased_bam
     shell:
         '''
-        if [[ "!{params.use_longphase}" == "true" ]]; then
+        if [[ "!{params.use_longphase_intermediate}" == "true" ]]; then
             echo "Using longphase for phasing"
             # longphase needs decompressed 
-            gzip -dc !{het_snps} > snps.vcf
+            bgzip -@ !{task.cpus} -dc !{het_snps} > snps.vcf
             longphase phase --ont -o phased_!{contig} \
                 -s snps.vcf -b !{bam} -r !{ref} -t !{task.cpus}
             bgzip phased_!{contig}.vcf
@@ -192,7 +192,7 @@ process phase_contig {
 }
 
 
-process phase_region {
+process phase_region_hets {
     label "clair3"
     cpus 1
     input:
@@ -228,7 +228,7 @@ process haplotag_phase_regions {
     shell:
         '''
         # Run a python program to join VCFs
-        bcftools concat vcfs/* | bcftools sort | bgzip -c > phased_!{contig}.vcf.gz
+        bcftools concat vcfs/* | bcftools sort | bgzip -@ !{tasks.cpus} -c > phased_!{contig}.vcf.gz
         tabix -f -p vcf phased_!{contig}.vcf.gz
 
         whatshap haplotag \
@@ -292,11 +292,10 @@ process get_contig_chunks {
 }
 
 
-workflow sharded_phase {
+workflow sharded_haplotag {
     take:
         phase_inputs
     main:
-        //phase_outputs = phase_contig(phase_inputs)
         phase_inputs.multiMap {
             it ->
                 contig: it[0]
@@ -321,14 +320,14 @@ workflow sharded_phase {
                 phase_inputs: it[0][1]
                 region: it[1][1]
             }.set { region_inputs }
-        region_vcfs = phase_region(region_inputs.phase_inputs, region_inputs.region)
+        region_vcfs = phase_region_hets(region_inputs.phase_inputs, region_inputs.region)
         
         // collect region VCFs by chrom and join to phase_inputs
         // we first join on chr, and then group by the groupKey
         // with knowledge of the sizes so big onward tasks for
         // different chroms don't wait for all region_vcf tasks.
         reg_counts
-            .cross(phase_region.out.region_vcf)  // cross is performed using chr
+            .cross(phase_region_hets.out.region_vcf)  // cross is performed using chr
             .map { i, j -> [i[1], i[0], j[1]] }  // i[1] is *chr
             .groupTuple()                        // uses *chr as key
             .map { i, j, k -> [j[0], k]}         // dispense with *chr, only need one chr!
@@ -519,6 +518,41 @@ process merge_pileup_and_full_vars{
 
         bgzip -c output/merge_!{contig}.vcf > output/merge_!{contig}.vcf.gz
         tabix output/merge_!{contig}.vcf.gz
+        '''
+}
+
+
+process phase_contig {
+    // Phase VCF for a contig
+    label "clair3"
+    cpus 4
+    input:
+        tuple val(contig), path(vcf), path(vcf_tbi), path(bam), path(bai), path(ref), path(fai)
+    output:
+        tuple val(contig), path("phased_${contig}.vcf.gz"), path("phased_${contig}.vcf.gz.tbi"), emit: vcf
+    shell:
+        '''
+        if [[ "!{params.use_longphase}" == "true" ]]; then
+            echo "Using longphase for phasing"
+            # longphase needs decompressed 
+            gzip -dc !{vcf} > variants.vcf
+            longphase phase --ont -o phased_!{contig} \
+                -s variants.vcf -b !{bam} -r !{ref} -t !{task.cpus}
+            bgzip phased_!{contig}.vcf
+        else
+            echo "Using whatshap for phasing"
+            whatshap phase \
+                --output phased_!{contig}.vcf.gz \
+                --reference !{ref} \
+                --chromosome !{contig} \
+                --distrust-genotypes \
+                --ignore-read-groups \
+                !{vcf} \
+                !{bam}
+        fi
+
+        tabix -f -p vcf phased_!{contig}.vcf.gz
+
         '''
 }
 
@@ -726,10 +760,10 @@ workflow clair3 {
             .combine(bam).combine(ref)
         // > Step 3 + Step 4
         if (params.parallel_phase) {
-            sharded_phase(phase_inputs).set { phased_bam }
+            sharded_haplotag(phase_inputs).set { phased_bam }
         } else {
-            phase_contig(phase_inputs)
-            phase_contig.out.phased_bam.set { phased_bam }
+            haplotag_contig(phase_inputs)
+            haplotag_contig.out.phased_bam.set { phased_bam }
         }
 
         // Find quality filter to select variants for "full alignment"
@@ -805,8 +839,7 @@ workflow clair3 {
         if (params.phase_vcf) {
             data = merge_pileup_and_full_vars.out.merged_vcf
                 .combine(bam).combine(ref).view()
-            chrom = data.map { it -> it[0] }
-            phase_region(data, chrom)
+            phase_contig(data)
                 .map { it -> [it[1]] }
                 .set { final_vcfs }
         } else {
