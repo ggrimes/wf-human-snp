@@ -890,6 +890,11 @@ workflow happy_evaluation {
 // entrypoint workflow
 WorkflowMain.initialise(workflow, params, log)
 workflow {
+    if (workflow.profile == "conda") {
+        println("The 'conda' profile is not supported by this workflow.")
+        exit 1
+    }
+
     start_ping()
     // TODO: why do we need a fai? is this a race condition on
     //       on multiple processes trying to create it?

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Post-call phasing led to mangled VCF.
 ### Added
 - Option to use longphase for post-call phasing.
+### Changed
+- Disabled conda profile for now.
 
 ## [v0.2.0]
 ### Added
