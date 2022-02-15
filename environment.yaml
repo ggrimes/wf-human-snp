@@ -5,8 +5,8 @@ channels:
     - conda-forge
     - defaults
 dependencies:
-    - aplanat
-    - bcftools
+    - aplanat==0.5.7
+    - bcftools==1.10.2
     - clair3==0.1.10
     - fastcat>=0.4.8
-    - epi2melabs
+    - epi2melabs==0.0.22
