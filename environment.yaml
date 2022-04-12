@@ -1,8 +1,8 @@
 name: epi2melabs-nf-human-snp
 channels:
+    - conda-forge
     - epi2melabs
     - bioconda
-    - conda-forge
     - defaults
 dependencies:
     - aplanat==0.5.7
