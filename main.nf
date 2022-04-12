@@ -892,7 +892,6 @@ WorkflowMain.initialise(workflow, params, log)
 workflow {
     if (workflow.profile == "conda") {
         println("The 'conda' profile is not supported by this workflow.")
-        exit 1
     }
 
     start_ping()
